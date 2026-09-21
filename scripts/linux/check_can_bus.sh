@@ -799,7 +799,7 @@ else
     if [ -s "$WORK_DIR/device.rows" ]; then
       awk -v dev="$INVENTORY_INTERFACE" '{print dev "|" $0}' "$WORK_DIR/device.rows" >>"$INVENTORY_FILE"
     fi
-    awk '/\\[NOT OK\\]/ || /\\[ATTENTION\\]/ {print} /^RESULT:/ {sub(/^RESULT:/,"Inventory result:");print}' "$WORK_DIR/inventory.report"
+    awk '/\[NOT OK\]/ || /\[ATTENTION\]/ {print} /^RESULT:/ {sub(/^RESULT:/,"Inventory result:");print}' "$WORK_DIR/inventory.report"
     if [ "$INVENTORY_RC" -ne 0 ]; then
       printf '  Search identities (some detailed profiles may be missing):\n'
       awk '/LID.*CAN ID.*HWID/ {show=1} /^---/ {show=0} show {print}' "$WORK_DIR/inventory.report"

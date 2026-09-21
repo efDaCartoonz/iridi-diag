@@ -368,6 +368,7 @@ separator
 printf '4. Controlled write test on the root filesystem\n'
 if [ "$WRITE_TEST" != "yes" ]; then
   ROOT_WRITE_STATUS="skipped (--no-write)"
+  warn "The write test was disabled with --no-write; write capability is unverified."
   printf '  [SKIP] The write test was disabled with --no-write.\n'
 elif [ "$ROOT_RW" != "yes" ]; then
   ROOT_WRITE_STATUS="not possible: root is not read-write"
@@ -380,7 +381,11 @@ else
     fail "Less than 4 MiB is free; the write test was skipped."
   else
     TEST_FILE="/server-diag-emmc-test-$$.bin"
-    TEST_ERROR="${TMPDIR:-/tmp}/server-diag-emmc-test-$$.err"
+    TEST_ERROR="$(mktemp /tmp/server-diag-emmc-test.XXXXXX 2>/dev/null)"
+    if [ -z "$TEST_ERROR" ]; then
+      TEST_ERROR="/dev/null"
+      warn "Could not create a private temporary error file; write-test diagnostics may be incomplete."
+    fi
     umask 077
     printf '  Temporary file: %s\n' "$TEST_FILE"
     dd if=/dev/urandom of="$TEST_FILE" bs=4096 count=256 2>"$TEST_ERROR"

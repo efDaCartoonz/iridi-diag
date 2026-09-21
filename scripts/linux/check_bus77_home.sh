@@ -62,17 +62,18 @@ fi
 set +e
 export LC_ALL=C
 
-TOOL_VERSION=1.3
+TOOL_VERSION=1.4
+USER_AGENT="iridi-diag/bus77-home/$TOOL_VERSION"
 
 REGION="Bus77 Home"
 GATE_HOSTS="37.27.5.98 85.192.35.27"
-GATE_PATTERN='(37\.27\.5\.98|85\.192\.35\.27):(9088|9089)'
 MAX_ATTEMPTS=3
 RETRY_DELAY=1
 TOTAL=0
 OK_COUNT=0
 FAIL_COUNT=0
 WARN_COUNT=0
+GATE_FAILED=0
 GATE_STATUS="not checked"
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bus77-home.XXXXXX" 2>/dev/null)"
@@ -134,14 +135,16 @@ probe_resource() {
       [ "$FOLLOW_REDIRECTS" = "yes" ] && REDIRECT_ARGS="--location --max-redirs 3"
       META="$(curl --insecure $REDIRECT_ARGS --connect-timeout 6 --max-time 15 \
         --silent --show-error --header 'Accept: application/json, text/plain, */*' \
-        --user-agent 'iridi-pro-cloud-check/1.1' --output "$BODY_FILE" \
+        --user-agent "$USER_AGENT" --output "$BODY_FILE" \
         --write-out '%{http_code}|%{remote_ip}|%{content_type}|%{size_download}|%{time_total}' \
         "$RESOURCE_URL" 2>"$ERROR_FILE")"
       CLIENT_RC=$?
       OLD_IFS=$IFS
+      set -f
       IFS='|'
       set -- $META
       IFS=$OLD_IFS
+      set +f
       HTTP_CODE="${1:-0}"
       REMOTE_IP="${2:-}"
       CONTENT_TYPE="${3:-}"
@@ -155,7 +158,7 @@ probe_resource() {
       wget --help 2>&1 | grep -q -e '--no-check-certificate' && WGET_TLS="--no-check-certificate"
       wget $WGET_TLS $WGET_REDIRECT -T 15 -t 1 -S -O "$BODY_FILE" \
         --header='Accept: application/json, text/plain, */*' \
-        --user-agent='iridi-pro-cloud-check/1.1' "$RESOURCE_URL" \
+        --user-agent="$USER_AGENT" "$RESOURCE_URL" \
         2>"$HEADER_FILE"
       CLIENT_RC=$?
       HTTP_CODE="$(awk '/^[[:space:]]*HTTP\/[0-9.]+ [0-9][0-9][0-9]/{code=$2} END{print code+0}' "$HEADER_FILE")"
@@ -224,26 +227,43 @@ probe_resource() {
   fi
 }
 
-check_gate() {
-  GATE_OUTPUT=""
-  if command -v ss >/dev/null 2>&1; then
-    GATE_OUTPUT="$(ss -ntp 2>/dev/null)"
-  elif command -v netstat >/dev/null 2>&1; then
-    GATE_OUTPUT="$(netstat -ntp 2>/dev/null)"
-  elif command -v busybox >/dev/null 2>&1 && busybox --list 2>/dev/null | grep -qx netstat; then
-    GATE_OUTPUT="$(busybox netstat -ntp 2>/dev/null)"
+check_gate_tcp() {
+  _HOST="$1"; _PORT="$2"
+  if command -v nc >/dev/null 2>&1; then
+    if nc -w 5 "$_HOST" "$_PORT" </dev/null >/dev/null 2>&1; then return 0; fi
   fi
-  GATE_LINE="$(printf '%s\n' "$GATE_OUTPUT" | grep -E "$GATE_PATTERN" | head -n 1)"
+  if command -v curl >/dev/null 2>&1; then
+    curl --connect-timeout 5 --max-time 6 --silent --show-error "http://$_HOST:$_PORT/" </dev/null >/dev/null 2>&1
+    _RC=$?; case "$_RC" in 0|52|56) return 0 ;; esac
+  fi
+  return 1
+}
+
+check_gate() {
   separator
   printf 'Cloud Gate: %s, ports 9088/9089\n' "$GATE_HOSTS"
-  if [ -n "$GATE_LINE" ]; then
-    GATE_STATUS="active connection found"
-    printf '  [OK] An active connection was found.\n'
-    printf '  %s\n' "$GATE_LINE"
+  GATE_OK=0
+  GATE_TOTAL=0
+  for GH in $GATE_HOSTS; do
+    for PORT in 9088 9089; do
+      GATE_TOTAL=$((GATE_TOTAL + 1))
+      printf '  %s:%s ... ' "$GH" "$PORT"
+      if check_gate_tcp "$GH" "$PORT"; then
+        printf '[OK] TCP port accepts connections.\n'
+        GATE_OK=$((GATE_OK + 1))
+      else
+        printf '[ATTENTION] TCP port did not accept a connection within 5 s.\n'
+        WARN_COUNT=$((WARN_COUNT + 1))
+      fi
+    done
+  done
+  if [ "$GATE_OK" -eq 0 ]; then
+    GATE_STATUS="not reachable (0 of $GATE_TOTAL)"
+    printf '  [NOT OK] No Cloud Gate endpoint accepted a TCP connection.\n'
+    GATE_FAILED=1
   else
-    GATE_STATUS="no active connection found"
-    printf '  [ATTENTION] No active connection was found. This does not invalidate the HTTP checks.\n'
-    WARN_COUNT=$((WARN_COUNT + 1))
+    GATE_STATUS="reachable ($GATE_OK of $GATE_TOTAL)"
+    printf '  [OK] Cloud Gate is reachable through %s of %s tested endpoints.\n' "$GATE_OK" "$GATE_TOTAL"
   fi
 }
 
@@ -253,6 +273,7 @@ printf 'Started: %s\n' "$(date 2>/dev/null || echo unknown)"
 printf 'Log file: %s\n' "${IRIDI_CLOUD_LOG_FILE:-not set}"
 printf 'Device: %s | %s | %s\n' "$(hostname 2>/dev/null || echo unknown)" "$(uname -s 2>/dev/null)" "$(uname -m 2>/dev/null)"
 printf 'Method: DNS + real HTTP(S) GET + response and payload analysis\n'
+printf 'Note: TLS certificate validation is intentionally bypassed for reachability diagnostics.\n'
 
 probe_resource www "Website and downloads" "https://www.iridi.com/" "89.169.183.139" yes
 probe_resource auth-ru "Authorization RU" "https://auth.ru.iridi.com/" "84.201.152.245" yes
@@ -260,6 +281,7 @@ probe_resource endpoint "Cloud endpoint" "https://endpoint.iridi.com/" "95.181.1
 probe_resource bus77-home "Bus77 Home cloud" "https://bus77home.ru.iridi.com/" "84.201.152.245" yes
 probe_resource iphub-home "IP-Hub Home cloud" "https://iphubhome.ru.iridi.com/" "37.139.42.137" yes
 probe_resource commercial "Commercial offers API" "https://api.commercial-offer.iridi.com/" "213.219.212.191" yes
+probe_resource voice-cws "Voice assistants (CWS)" "https://cws.iridi.com:7972/" "185.32.84.60" no
 check_gate
 
 separator
@@ -268,7 +290,7 @@ printf '  Profile: %s\n' "$REGION"
 printf '  HTTP resources: %s of %s available, %s failed\n' "$OK_COUNT" "$TOTAL" "$FAIL_COUNT"
 printf '  Cloud Gate: %s\n' "$GATE_STATUS"
 printf '  Warnings: %s\n' "$WARN_COUNT"
-if [ "$FAIL_COUNT" -gt 0 ]; then
+if [ "$FAIL_COUNT" -gt 0 ] || [ "$GATE_FAILED" -eq 1 ]; then
   printf '  Conclusion: one or more required cloud resources are unavailable.\n'
 elif [ "$WARN_COUNT" -gt 0 ]; then
   printf '  Conclusion: required HTTP resources are available, but some items require attention.\n'
@@ -281,6 +303,10 @@ printf 'SUMMARY %s: checked %s, available %s, failed %s, warnings %s\n' "$REGION
 if [ "$FAIL_COUNT" -gt 0 ]; then
   printf 'RESULT: FAIL - NOT OK: one or more required cloud HTTP resources are unavailable.\n'
   exit 2
+fi
+if [ "$GATE_FAILED" -eq 1 ]; then
+  printf 'RESULT: WARN - ATTENTION REQUIRED: HTTP resources are available, but Cloud Gate is not reachable.\n'
+  exit 1
 fi
 if [ "$WARN_COUNT" -gt 0 ]; then
   printf 'RESULT: WARN - ATTENTION REQUIRED: HTTP resources are available, but warnings were found.\n'

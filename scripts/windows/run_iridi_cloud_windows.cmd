@@ -34,12 +34,14 @@ if not exist "%~dp0%SCRIPT%" (
 echo PowerShell version: %PS_MAJOR%
 echo Diagnostic engine: %SCRIPT%
 echo.
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0%SCRIPT%"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0%SCRIPT%" %*
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
 echo ================================================================
-if "%EXIT_CODE%"=="0" (
+if "%EXIT_CODE%"=="10" (
+    echo RESULT: NOT RUN - user exited before selecting a product
+) else if "%EXIT_CODE%"=="0" (
     powershell.exe -NoLogo -NoProfile -Command "Write-Host 'RESULT: PASS - OK' -ForegroundColor Green"
 ) else if "%EXIT_CODE%"=="1" (
     powershell.exe -NoLogo -NoProfile -Command "Write-Host 'RESULT: WARN - ATTENTION REQUIRED' -ForegroundColor Yellow"

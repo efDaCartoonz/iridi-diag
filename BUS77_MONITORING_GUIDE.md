@@ -4,6 +4,8 @@ This guide explains the output of `scripts/linux/monitor_can_bus.sh`, including
 what to look for while pressing buttons or switching a load on and off.
 It describes the current tool, not every possible Bus77 device implementation.
 
+[Русская версия](BUS77_MONITORING_GUIDE_RU.md) | [Main README](README.md)
+
 ## 1. Capture a controlled sequence
 
 Download the monitor and observe one interface for five minutes:

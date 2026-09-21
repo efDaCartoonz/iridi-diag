@@ -2,13 +2,32 @@
 
 A collection of standalone tools for diagnosing iRidi servers, storage, and
 cloud connectivity. The Linux scripts use portable POSIX `sh` and support
-BusyBox-based HS Server firmware. The Windows scripts support the built-in
+BusyBox-based HS Server firmware. The macOS script supports interactive
+launch from Finder and CLI. The Windows scripts support the built-in
 Windows PowerShell versions found on Windows 7, 10, and 11.
+
+[Русская версия](README_RU.md) | [Bus77 Monitoring Guide](BUS77_MONITORING_GUIDE.md)
 
 ## Repository layout
 
 - `scripts/linux` — Linux, Debian, and BusyBox-based firmware;
+- `scripts/macos` — macOS (interactive launcher and POSIX sh engine);
 - `scripts/windows` — Windows 7, Windows 10, and Windows 11.
+
+### Windows
+
+| File | Purpose |
+| --- | --- |
+| `run_iridi_cloud_windows.cmd` | Double-click launcher with a product menu and automatic logging |
+| `check_iridi_cloud_windows_10_11.ps1` | Cloud diagnostics for Windows 10/11 and Windows PowerShell 5.1 |
+| `check_iridi_cloud_windows_7.ps1` | Cloud diagnostics for Windows 7 and Windows PowerShell 2.0 or newer |
+
+### macOS
+
+| File | Purpose |
+| --- | --- |
+| `run_iridi_cloud_macos.command` | Double-click Finder launcher with a product menu and automatic logging |
+| `check_iridi_cloud_macos.sh` | All-in-one cloud diagnostics for macOS with CLI flags and interactive mode |
 
 ### Linux and BusyBox
 
@@ -25,14 +44,6 @@ Windows PowerShell versions found on Windows 7, 10, and 11.
 | `monitor_can_bus.sh` | Named sender-to-receiver Bus77 messages, commands, values and route summaries |
 | `scan_bus77_devices.sh` | Read-only active Bus77 discovery with model, HWID, firmware, and channel counts |
 
-### Windows
-
-| File | Purpose |
-| --- | --- |
-| `run_iridi_cloud_windows.cmd` | Double-click launcher with a product menu and automatic logging |
-| `check_iridi_cloud_windows_10_11.ps1` | Cloud diagnostics for Windows 10/11 and Windows PowerShell 5.1 |
-| `check_iridi_cloud_windows_7.ps1` | Cloud diagnostics for Windows 7 and Windows PowerShell 2.0 or newer |
-
 ## Result colors and exit codes
 
 Interactive output uses the following status colors:
@@ -41,7 +52,7 @@ Interactive output uses the following status colors:
 - yellow — `[ATTENTION]` and `RESULT: WARN`;
 - red — `[NOT OK]` and `RESULT: FAIL`.
 
-Linux colors are enabled only when output is connected to a terminal. Set
+Linux and macOS colors are enabled only when output is connected to a terminal. Set
 `NO_COLOR=1` to disable them. Log files remain plain text and never contain ANSI
 color sequences.
 
@@ -50,6 +61,98 @@ Exit codes are consistent across the current tools:
 - `0` — `PASS`: required checks passed;
 - `1` — `WARN`: the main checks passed, but one or more items require attention;
 - `2` — `FAIL`: a required check failed or the tool could not complete safely.
+
+---
+
+## Cloud diagnostics on Windows
+
+Download all three files into the same folder and double-click `run_iridi_cloud_windows.cmd`.
+
+**Windows 10/11 — download with curl.exe (built-in since Windows 10 1803):**
+
+```bat
+mkdir "%USERPROFILE%\Desktop\iridi-diag-windows" && cd /d "%USERPROFILE%\Desktop\iridi-diag-windows"
+curl.exe -fL -o run_iridi_cloud_windows.cmd      "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/windows/run_iridi_cloud_windows.cmd"
+curl.exe -fL -o check_iridi_cloud_windows_10_11.ps1 "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/windows/check_iridi_cloud_windows_10_11.ps1"
+curl.exe -fL -o check_iridi_cloud_windows_7.ps1  "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/windows/check_iridi_cloud_windows_7.ps1"
+run_iridi_cloud_windows.cmd
+```
+
+**Windows 7 — download with certutil.exe:**
+
+```bat
+mkdir "%USERPROFILE%\Desktop\iridi-diag-windows"
+cd /d "%USERPROFILE%\Desktop\iridi-diag-windows"
+certutil.exe -urlcache -split -f "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/windows/run_iridi_cloud_windows.cmd"      run_iridi_cloud_windows.cmd
+certutil.exe -urlcache -split -f "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/windows/check_iridi_cloud_windows_10_11.ps1" check_iridi_cloud_windows_10_11.ps1
+certutil.exe -urlcache -split -f "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/windows/check_iridi_cloud_windows_7.ps1"     check_iridi_cloud_windows_7.ps1
+run_iridi_cloud_windows.cmd
+```
+
+The launcher detects the installed Windows PowerShell version, selects the
+compatible diagnostic engine, displays live progress, and keeps the window open
+after completion. Each run is saved under `logs\` in the same folder with the
+product, region, and timestamp in the file name.
+
+The PowerShell scripts can also be run directly with a `-Product` parameter:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\check_iridi_cloud_windows_10_11.ps1 -Product bus77-home
+```
+
+Supported parameters:
+
+```powershell
+-Product i3knx
+-Product bus77-home
+-Product bus77-lite
+-Product iridi-pro -Region RU
+-Product iridi-pro -Region EU
+-Product iridi-pro -Region CN
+```
+
+The Windows 7 version uses the built-in WinHTTP component and explicitly enables
+TLS 1.2. If the operating system does not provide TLS 1.2 support, the script
+reports a connection error so it can be distinguished from a cloud service
+response.
+
+---
+
+## Cloud diagnostics on macOS
+
+Download both files into the same folder, then double-click `run_iridi_cloud_macos.command` in Finder.
+
+```sh
+mkdir -p ~/Desktop/iridi-diag-macos && cd ~/Desktop/iridi-diag-macos
+curl -fsSL -O "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/macos/run_iridi_cloud_macos.command"
+curl -fsSL -O "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/macos/check_iridi_cloud_macos.sh"
+chmod +x run_iridi_cloud_macos.command check_iridi_cloud_macos.sh
+open .
+```
+
+Double-click `run_iridi_cloud_macos.command` in the opened Finder window to launch.
+Select i3 KNX, Bus77 Home, Bus77 Lite, or iRidi Pro (RU / EU / CN).
+
+The script can also be run directly from Terminal with a `--product` flag:
+
+```sh
+sh check_iridi_cloud_macos.sh --product bus77-home
+```
+
+Supported CLI parameters:
+
+```sh
+sh check_iridi_cloud_macos.sh --product i3knx
+sh check_iridi_cloud_macos.sh --product bus77-home
+sh check_iridi_cloud_macos.sh --product bus77-lite
+sh check_iridi_cloud_macos.sh --product iridi-pro --region RU
+sh check_iridi_cloud_macos.sh --product iridi-pro --region EU
+sh check_iridi_cloud_macos.sh --product iridi-pro --region CN
+```
+
+Each run automatically writes a log file under `logs/` in the same folder with product name and timestamp.
+
+---
 
 ## Cloud diagnostics on Linux
 
@@ -71,7 +174,7 @@ Download and run a script with `wget`:
 
 ```sh
 cd /tmp
-wget --no-check-certificate -O check_bus77_home.sh https://raw.githubusercontent.com/efDaCartoonz/irididiag/main/scripts/linux/check_bus77_home.sh
+wget --no-check-certificate -O check_bus77_home.sh https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/linux/check_bus77_home.sh
 sh check_bus77_home.sh
 ```
 
@@ -85,9 +188,46 @@ sh check_iridi_pro_eu.sh
 sh check_iridi_pro_cn.sh
 ```
 
-Cloud Gate is evaluated from an active `iridium` process session on the Linux
-server. Run the matching product script on a server with that product active;
-otherwise, a detected session may belong to different software.
+Cloud Gate connectivity is verified by an active TCP probe to ports 9088 and 9089.
+
+---
+
+## eMMC diagnostics
+
+Download and run the diagnostic as `root`:
+
+```sh
+cd /tmp
+wget --no-check-certificate -O check_emmc_health.sh https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/linux/check_emmc_health.sh
+sh check_emmc_health.sh
+```
+
+The script reports the eMMC model, manufacturer, `LIFE_TIME`, `PRE_EOL_INFO`,
+`USER_WP`, block-device read-only state, root filesystem, relevant kernel errors,
+and the complete root write path. On overlay systems it also reports the
+`upperdir`, `workdir`, backing filesystem, mount mode, free space, and inode use.
+
+By default, it creates a temporary 1 MiB file directly under `/`, runs `sync`,
+reads the file twice, compares checksums, and removes the file. This verifies the
+actual write path through the root filesystem or overlay. Use the read-only mode
+to collect passive information without creating the test file. Because write
+capability is then unverified, the result is WARN rather than PASS:
+
+```sh
+sh check_emmc_health.sh --no-write
+```
+
+The script never writes directly to the block device, runs `fsck`, or remounts a
+filesystem. A `PASS` result confirms the checks performed during that run; it
+does not rule out intermittent faults or replace a full-device endurance test.
+
+Every run creates a plain-text log such as:
+
+```text
+emmc_diagnostic_SERVER_20260901_153000_1234.log
+```
+
+---
 
 ## CAN/Bus77 diagnostics on HSS and ProAV
 
@@ -99,7 +239,7 @@ when the server already provides `ip`, `candump`, `cansend` and BusyBox awk.
 
 ```sh
 cd /tmp
-wget --no-check-certificate -O check_can_bus.sh https://raw.githubusercontent.com/efDaCartoonz/irididiag/main/scripts/linux/check_can_bus.sh &&
+wget --no-check-certificate -O check_can_bus.sh https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/linux/check_can_bus.sh &&
 sh check_can_bus.sh
 ```
 
@@ -123,7 +263,7 @@ button/on-off experiments, example messages and interpretation limits.
 
 ```sh
 cd /tmp
-wget --no-check-certificate -O monitor_can_bus.sh https://raw.githubusercontent.com/efDaCartoonz/irididiag/main/scripts/linux/monitor_can_bus.sh &&
+wget --no-check-certificate -O monitor_can_bus.sh https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/linux/monitor_can_bus.sh &&
 sh monitor_can_bus.sh
 ```
 
@@ -174,86 +314,3 @@ be excluded. Incomplete identity data or traffic yields an explicit warning.
 `scan_bus77_devices.sh` remains available as an optional inventory-only tool
 for compatibility; neither of the two main tools requires it as a separate file.
 Protocol reference: [official BUS77 SDK](https://github.com/iRidium-Mobile/BUS77-SDK).
-
-## Cloud diagnostics on Windows
-
-1. Download the [repository ZIP archive](https://github.com/efDaCartoonz/irididiag/archive/refs/heads/main.zip).
-2. Extract the entire archive.
-3. Open `scripts\windows`.
-4. Double-click `run_iridi_cloud_windows.cmd`.
-5. Select i3 KNX, Bus77 Home, Bus77 Lite, iRidi Pro RU, or iRidi Pro EU.
-
-The launcher detects the installed Windows PowerShell version, selects the
-compatible diagnostic engine, displays live progress, and keeps the window open
-after completion. Each run is saved under `scripts\windows\logs` with the
-product, region, and timestamp in the file name.
-
-Windows 10/11 can also run the PowerShell script directly:
-
-```powershell
-Set-Location $env:TEMP
-curl.exe -fL "https://raw.githubusercontent.com/efDaCartoonz/irididiag/main/scripts/windows/check_iridi_cloud_windows_10_11.ps1" -o "check_iridi_cloud_windows_10_11.ps1"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\check_iridi_cloud_windows_10_11.ps1 -Product bus77-home
-```
-
-Supported parameters:
-
-```powershell
--Product i3knx
--Product bus77-home
--Product bus77-lite
--Product iridi-pro -Region RU
--Product iridi-pro -Region EU
-```
-
-Windows 7 can run its compatible script directly:
-
-```bat
-certutil.exe -urlcache -split -f "https://raw.githubusercontent.com/efDaCartoonz/irididiag/main/scripts/windows/check_iridi_cloud_windows_7.ps1" "%TEMP%\check_iridi_cloud_windows_7.ps1"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\check_iridi_cloud_windows_7.ps1" -Product bus77-home
-```
-
-The Windows 7 version uses the built-in WinHTTP component and explicitly enables
-TLS 1.2. If the operating system does not provide TLS 1.2 support, the script
-reports a connection error so it can be distinguished from a cloud service
-response.
-
-## eMMC diagnostics
-
-Run the full diagnostic as `root`:
-
-```sh
-sh check_emmc_health.sh
-```
-
-Download the current version with `wget`:
-
-```sh
-cd /tmp
-wget --no-check-certificate -O check_emmc_health.sh https://raw.githubusercontent.com/efDaCartoonz/irididiag/main/scripts/linux/check_emmc_health.sh
-sh check_emmc_health.sh
-```
-
-The script reports the eMMC model, manufacturer, `LIFE_TIME`, `PRE_EOL_INFO`,
-`USER_WP`, block-device read-only state, root filesystem, relevant kernel errors,
-and the complete root write path. On overlay systems it also reports the
-`upperdir`, `workdir`, backing filesystem, mount mode, free space, and inode use.
-
-By default, it creates a temporary 1 MiB file directly under `/`, runs `sync`,
-reads the file twice, compares checksums, and removes the file. This verifies the
-actual write path through the root filesystem or overlay. Use the read-only mode
-to collect passive information without creating the test file:
-
-```sh
-sh check_emmc_health.sh --no-write
-```
-
-The script never writes directly to the block device, runs `fsck`, or remounts a
-filesystem. A `PASS` result confirms the checks performed during that run; it
-does not rule out intermittent faults or replace a full-device endurance test.
-
-Every run creates a plain-text log such as:
-
-```text
-emmc_diagnostic_SERVER_20260901_153000_1234.log
-```

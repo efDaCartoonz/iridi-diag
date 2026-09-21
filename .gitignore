@@ -1,1 +1,4 @@
-scripts/windows/logs/
+scripts/*/logs/
+review*.md
+CHANGELOG*.md
+.DS_Store

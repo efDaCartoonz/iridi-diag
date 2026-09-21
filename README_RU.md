@@ -1,0 +1,264 @@
+# Скрипты диагностики iRidi
+
+Коллекция автономных инструментов для диагностики серверов, хранилища и облачного подключения iRidi. Скрипты для Linux написаны на переносимом POSIX `sh` и поддерживают прошивки HS Server на базе BusyBox. Скрипт для macOS поддерживает интерактивный запуск через Finder и CLI. Скрипты для Windows поддерживают встроенные версии Windows PowerShell в Windows 7, 10 и 11.
+
+[English version](README.md) | [Руководство по мониторингу Bus77](BUS77_MONITORING_GUIDE_RU.md)
+
+## Структура репозитория
+
+- `scripts/linux` — Linux, Debian и прошивки на базе BusyBox;
+- `scripts/macos` — macOS (интерактивный лаунчер и движок на POSIX sh);
+- `scripts/windows` — Windows 7, Windows 10 и Windows 11.
+
+### Windows
+
+| Файл | Назначение |
+| --- | --- |
+| `run_iridi_cloud_windows.cmd` | Лаунчер для запуска двойным кликом с меню выбора продукта и автологированием |
+| `check_iridi_cloud_windows_10_11.ps1` | Облачная диагностика для Windows 10/11 и Windows PowerShell 5.1 |
+| `check_iridi_cloud_windows_7.ps1` | Облачная диагностика для Windows 7 и Windows PowerShell 2.0 или новее |
+
+### macOS
+
+| Файл | Назначение |
+| --- | --- |
+| `run_iridi_cloud_macos.command` | Лаунчер для запуска двойным кликом в Finder с меню выбора продукта и автологированием |
+| `check_iridi_cloud_macos.sh` | Универсальный скрипт диагностики для macOS с поддержкой CLI-флагов и интерактивного режима |
+
+### Linux и BusyBox
+
+| Файл | Назначение |
+| --- | --- |
+| `check_i3knx.sh` | Проверка облачных ресурсов i3 KNX на прикладном уровне и сессии Cloud Gate |
+| `check_bus77_home.sh` | Проверка облачных ресурсов Bus77 Home на прикладном уровне |
+| `check_bus77_lite.sh` | Проверка облачных ресурсов Bus77 Lite на прикладном уровне |
+| `check_iridi_pro_ru.sh` | Проверка iRidi Pro Cloud для региона RU |
+| `check_iridi_pro_eu.sh` | Проверка iRidi Pro Cloud для региона EU |
+| `check_iridi_pro_cn.sh` | Проверка iRidi Pro Cloud для региона CN |
+| `check_emmc_health.sh` | Диагностика состояния eMMC, пути записи root, overlay и ошибок ядра |
+| `check_can_bus.sh` | Инвентаризация устройств (HWID, модель, имя, прошивка/профиль) и состояние CAN-шины |
+| `monitor_can_bus.sh` | Мониторинг сообщений Bus77 (отправитель -> получатель), команд, значений и сводка маршрутов |
+| `scan_bus77_devices.sh` | Пассивный/активный опрос устройств Bus77 с выводом модели, HWID, прошивки и количества каналов |
+
+## Цветовая индикация и коды возврата
+
+В интерактивном выводе используются следующие цвета:
+
+- зелёный — `[OK]` и `RESULT: PASS`;
+- жёлтый — `[ATTENTION]` и `RESULT: WARN`;
+- красный — `[NOT OK]` и `RESULT: FAIL`.
+
+В Linux и macOS цвета включаются только при выводе в терминал. Для отключения установите переменную `NO_COLOR=1`. Файлы логов сохраняются в виде обычного текста без ANSI escape-последовательностей.
+
+Коды возврата (exit codes) согласованы во всех инструментах:
+
+- `0` — `PASS`: все обязательные проверки успешно пройдены;
+- `1` — `WARN`: основные проверки пройдены, но есть предупреждения, требующие внимания;
+- `2` — `FAIL`: одна или несколько обязательных проверок провалены или скрипт не смог завершиться штатно.
+
+---
+
+## Облачная диагностика на Windows
+
+Скачайте все три файла в одну папку и дважды кликните по `run_iridi_cloud_windows.cmd`.
+
+**Windows 10/11 — скачать через curl.exe (встроен с Windows 10 версии 1803):**
+
+```bat
+mkdir "%USERPROFILE%\Desktop\iridi-diag-windows" && cd /d "%USERPROFILE%\Desktop\iridi-diag-windows"
+curl.exe -fL -o run_iridi_cloud_windows.cmd         "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/windows/run_iridi_cloud_windows.cmd"
+curl.exe -fL -o check_iridi_cloud_windows_10_11.ps1 "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/windows/check_iridi_cloud_windows_10_11.ps1"
+curl.exe -fL -o check_iridi_cloud_windows_7.ps1     "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/windows/check_iridi_cloud_windows_7.ps1"
+run_iridi_cloud_windows.cmd
+```
+
+**Windows 7 — скачать через certutil.exe:**
+
+```bat
+mkdir "%USERPROFILE%\Desktop\iridi-diag-windows"
+cd /d "%USERPROFILE%\Desktop\iridi-diag-windows"
+certutil.exe -urlcache -split -f "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/windows/run_iridi_cloud_windows.cmd"         run_iridi_cloud_windows.cmd
+certutil.exe -urlcache -split -f "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/windows/check_iridi_cloud_windows_10_11.ps1"  check_iridi_cloud_windows_10_11.ps1
+certutil.exe -urlcache -split -f "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/windows/check_iridi_cloud_windows_7.ps1"      check_iridi_cloud_windows_7.ps1
+run_iridi_cloud_windows.cmd
+```
+
+Лаунчер определит установленную версию Windows PowerShell, выберет совместимый движок диагностики, отобразит ход проверки и оставит окно открытым после завершения. Результаты каждого запуска сохраняются в папке `logs\` рядом со скриптами с указанием продукта, региона и времени в имени файла.
+
+PowerShell-скрипты можно запустить напрямую с параметром `-Product`:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\check_iridi_cloud_windows_10_11.ps1 -Product bus77-home
+```
+
+Поддерживаемые параметры:
+
+```powershell
+-Product i3knx
+-Product bus77-home
+-Product bus77-lite
+-Product iridi-pro -Region RU
+-Product iridi-pro -Region EU
+-Product iridi-pro -Region CN
+```
+
+Версия для Windows 7 использует встроенный компонент WinHTTP и принудительно включает TLS 1.2. Если операционная система не поддерживает TLS 1.2, скрипт сообщит об ошибке подключения.
+
+---
+
+## Облачная диагностика на macOS
+
+Скачайте оба файла в одну папку, затем дважды кликните по `run_iridi_cloud_macos.command` в Finder.
+
+```sh
+mkdir -p ~/Desktop/iridi-diag-macos && cd ~/Desktop/iridi-diag-macos
+curl -fsSL -O "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/macos/run_iridi_cloud_macos.command"
+curl -fsSL -O "https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/macos/check_iridi_cloud_macos.sh"
+chmod +x run_iridi_cloud_macos.command check_iridi_cloud_macos.sh
+open .
+```
+
+В открывшемся окне Finder дважды кликните по `run_iridi_cloud_macos.command`.
+Выберите нужный продукт: i3 KNX, Bus77 Home, Bus77 Lite или iRidi Pro (RU / EU / CN).
+
+Скрипт также можно запустить напрямую из Терминала с параметром `--product`:
+
+```sh
+sh check_iridi_cloud_macos.sh --product bus77-home
+```
+
+Поддерживаемые параметры командной строки:
+
+```sh
+sh check_iridi_cloud_macos.sh --product i3knx
+sh check_iridi_cloud_macos.sh --product bus77-home
+sh check_iridi_cloud_macos.sh --product bus77-lite
+sh check_iridi_cloud_macos.sh --product iridi-pro --region RU
+sh check_iridi_cloud_macos.sh --product iridi-pro --region EU
+sh check_iridi_cloud_macos.sh --product iridi-pro --region CN
+```
+
+Каждый запуск автоматически записывает файл лога в папку `logs/` рядом со скриптом с именем продукта и временной меткой.
+
+---
+
+## Облачная диагностика на Linux
+
+Проверка облака — это не просто ping хоста или проверка открытого порта. Каждый скрипт выполняет DNS-резолвинг и реальный HTTP(S) GET-запрос, читает тело ответа (payload) и выводит реальный IP-адрес, документированный IP-адрес, HTTP-статус, Content-Type, размер payload, время запроса и количество попыток. При сетевых сбоях без HTTP-ответа выполняется до трёх повторных попыток. Ответ `403` от защищённого хранилища также подтверждает доступность ресурса на прикладном уровне.
+
+В терминале отображается прогресс выполнения, а для каждого запуска создаётся отдельный файл лога. Пример имени файла:
+
+```text
+cloud_bus77_home_SERVER_20260901_153000_1234.log
+```
+
+Скачивание и запуск скрипта через `wget`:
+
+```sh
+cd /tmp
+wget --no-check-certificate -O check_bus77_home.sh https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/linux/check_bus77_home.sh
+sh check_bus77_home.sh
+```
+
+Аналогично запускаются профили для других продуктов:
+
+```sh
+sh check_i3knx.sh
+sh check_bus77_lite.sh
+sh check_iridi_pro_ru.sh
+sh check_iridi_pro_eu.sh
+sh check_iridi_pro_cn.sh
+```
+
+Доступность Cloud Gate проверяется активным TCP-подключением к портам 9088 и 9089.
+
+---
+
+## Диагностика eMMC
+
+Скачайте и запустите диагностику от имени `root`:
+
+```sh
+cd /tmp
+wget --no-check-certificate -O check_emmc_health.sh https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/linux/check_emmc_health.sh
+sh check_emmc_health.sh
+```
+
+Скрипт выводит модель eMMC, производителя, `LIFE_TIME`, `PRE_EOL_INFO`, `USER_WP`, статус защиты блочного устройства от записи, корневую файловую систему, ошибки ядра и полный путь записи root. На системах с overlay также выводятся `upperdir`, `workdir`, базовая файловая система, режим монтирования, свободное место и использование inodes.
+
+По умолчанию скрипт создает временный файл размером 1 МиБ прямо в `/`, вызывает `sync`, дважды считывает файл, сравнивает контрольные суммы и удаляет его. Это проверяет реальный путь записи через корневую ФС или overlay. Для пассивного сбора информации без создания тестового файла используйте режим только для чтения:
+
+```sh
+sh check_emmc_health.sh --no-write
+```
+
+Скрипт никогда не пишет напрямую на блочное устройство, не запускает `fsck` и не перемонтирует файловые системы. Результат `PASS` подтверждает успешность проверок, выполненных во время этого запуска; он не исключает периодических сбоев и не заменяет стресс-тест ресурса накопителя.
+
+Каждый запуск создает текстовый лог вида:
+
+```text
+emmc_diagnostic_SERVER_20260901_153000_1234.log
+```
+
+---
+
+## Диагностика CAN/Bus77 на HSS и ProAV
+
+Два автономных инструмента: скачивайте только тот файл, который вам нужен.
+Никаких дополнительных скриптов, установки пакетов или переконфигурации интерфейсов не требуется, если на сервере уже доступны `ip`, `candump`, `cansend` и BusyBox awk.
+
+### Инвентаризация устройств и состояние шины
+
+```sh
+cd /tmp
+wget --no-check-certificate -O check_can_bus.sh https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/linux/check_can_bus.sh &&
+sh check_can_bus.sh
+```
+
+Краткая диагностика (версия 2.2) выводит карточки устройств один раз, до проверки состояния шины.
+Монитор (версия 2.1) также повторяет их после наблюдения.
+Каждая карточка `BUS DEVICES` содержит модель, имя, HWID, версию прошивки и профиль. Недоступные при обнаружении данные явно помечаются.
+Команды скачивания перезаписывают старые скрипты вместо создания копий `.1`; версию скрипта `Script version: 2.2` можно проверить в заголовке отчёта.
+
+Отчёт начинается со списка ответивших устройств: LID, полный HWID, модель, имя устройства, версия прошивки и **номер профиля прошивки (Firmware ID)**.
+Затем выводятся состояние CAN-контроллера, битрейт, накопленные ошибки, новые ошибки и отброшенные кадры, активность RX/TX и настройки шлюза сервера.
+Наблюдение за состоянием длится 15 секунд после завершения обнаружения.
+
+### Кто, кому и что отправляет
+
+Подробные пояснения по полям, экспериментам с кнопками/нагрузками, примерам сообщений и ограничениям интерпретации читайте в [Руководстве по мониторингу Bus77](BUS77_MONITORING_GUIDE_RU.md).
+
+```sh
+cd /tmp
+wget --no-check-certificate -O monitor_can_bus.sh https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/linux/monitor_can_bus.sh &&
+sh monitor_can_bus.sh
+```
+
+Монитор сначала считывает идентификационные данные устройств, а затем переходит в режим пассивного прослушивания на 60 секунд.
+Он собирает кадры CAN в пакеты Bus77 и выводит:
+
+```text
+TIME     CAN   RX/TX  SENDER -> RECEIVER | REQUEST/RESPONSE COMMAND | DETAILS
+12:34:56 can0  TX     SERVER/GW(LID 0) -> LID 2 DM-306PS | REQUEST GetChannelValue tid=42 | channel=123
+12:34:56 can0  RX     LID 2 DM-306PS [464E] -> SERVER/GW(LID 0) | RESPONSE GetChannelValue tid=42 | channel=123 value=42
+```
+
+Это демонстрационный пример формата, а не утверждение, что на каждой шине идут именно эти команды. `RX/TX` указывается относительно сервера, а `ALL (broadcast)` означает широковещательное сообщение без конкретного получателя. `S3:LID 0` обозначает сегмент 3, локальный адрес 0; `SERVER/GW` обозначает локальный тракт передачи, который может пересылать команды внешних клиентов, а не генерировать каждую команду самостоятельно. Монитор декодирует поддерживаемые ID и значения каналов, тегов и переменных. Неизвестный payload выводится в hex; неполные сообщения, неподдерживаемые форматы и ошибки CRC помечаются явно. Название модели не угадывается по неизвестному адресу устройства. Названия каналов и единицы измерения не выводятся без описаний устройств.
+
+После живого потока выводятся сводка маршрутов и счётчики шины. В терминале с поддержкой цвета запросы выделяются бирюзовым цветом, ответы — зелёным, а ошибки/предупреждения — красным/жёлтым.
+Текстовый лог сохраняется автоматически. Логи содержат идентификаторы устройств и значения на шине — проверяйте их перед отправкой третьим лицам. Чувствительные данные (токены сессий, потоки прошивки) скрываются.
+
+### Параметры и безопасность
+
+```sh
+sh check_can_bus.sh --interface can0 --duration 30
+sh monitor_can_bus.sh --interface can1 --duration 300
+sh monitor_can_bus.sh --passive --duration 60
+```
+
+Оба инструмента по умолчанию используют все обнаруженные интерфейсы SocketCAN. Параметр `--duration` задаёт время наблюдения, а не поиска. `--passive` отключает все исходящие диагностические запросы (идентификация устройств и профили считываться не будут).
+
+По умолчанию обнаружение отправляет только один запрос System Search и один Device Info на каждый найденный LID. Скрипт никогда не меняет адреса, каналы, прошивки или настройки CAN. В список попадают только ответившие устройства. Не запускайте несколько диагностик или сканеров одновременно: обнаружение использует CAN ID `0xFFFE` и LID `254`, и скрипт завершит работу, если этот идентификатор будет замечен в начальной выборке трафика. Скрытые конфликты адресов не исключены.
+
+Скрипт `scan_bus77_devices.sh` сохранён как опциональный инструмент только для инвентаризации для обратной совместимости; ни один из основных инструментов не требует его наличия.
+Справка по протоколу: [официальный BUS77 SDK](https://github.com/iRidium-Mobile/BUS77-SDK).

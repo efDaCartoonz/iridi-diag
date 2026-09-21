@@ -7,7 +7,7 @@
 param(
     [string]$Product = "",
 
-    [ValidateSet("RU", "EU")]
+    [ValidateSet("RU", "EU", "CN")]
     [string]$Region = "RU"
 )
 
@@ -36,16 +36,18 @@ if (-not $Product) {
         Write-Host "3. Bus77 Lite"
         Write-Host "4. iRidi Pro - RU region"
         Write-Host "5. iRidi Pro - EU region"
+        Write-Host "6. iRidi Pro - CN region"
         Write-Host "0. Exit"
         Write-Host ""
-        $selection = Read-Host "Select product (0-5)"
+        $selection = Read-Host "Select product (0-6)"
         switch ($selection) {
             "1" { $Product = "i3knx" }
             "2" { $Product = "bus77-home" }
             "3" { $Product = "bus77-lite" }
             "4" { $Product = "iridi-pro"; $Region = "RU" }
             "5" { $Product = "iridi-pro"; $Region = "EU" }
-            "0" { exit 0 }
+            "6" { $Product = "iridi-pro"; $Region = "CN" }
+            "0" { exit 10 }
             default {
                 Write-Host "Invalid selection. Press Enter and try again."
                 [void](Read-Host)
@@ -127,6 +129,7 @@ function Add-CommonBus77Resources {
     $items += New-Resource "bus77" $ProductLabel ("https://" + $ProductHost + "/") "84.201.152.245"
     $items += New-Resource "iphub" $IpHubLabel ("https://" + $IpHubHost + "/") $IpHubIp
     $items += New-Resource "commercial" "Commercial offers API" "https://api.commercial-offer.iridi.com/" "213.219.212.191"
+    $items += New-Resource "voice-cws" "Voice assistants (CWS)" "https://cws.iridi.com:7972/" "185.32.84.60"
     return $items
 }
 
@@ -139,7 +142,7 @@ switch ($Product) {
         $ProductLabel = "i3 KNX"
         $GateHosts = @("37.27.5.98", "85.192.35.27")
         $Resources += New-Resource "www" "Website and downloads" "https://www.iridi.com/" "89.169.183.139"
-        $Resources += New-Resource "auth-eu" "Authorization EU" "https://auth.eu.iridi.com/" "84.201.152.245"
+        $Resources += New-Resource "auth-eu" "Authorization EU" "https://auth.eu.iridi.com/" "95.216.162.71"
         $Resources += New-Resource "proxy-auth-eu" "Authorization proxy EU" "https://proxy.auth.eu.iridi.com/" "72.56.78.171"
         $Resources += New-Resource "proxy-auth-cloud" "Authorization proxy Cloud" "https://proxy.auth.eu.iridi.cloud/" "94.131.83.102"
         $Resources += New-Resource "i3knx-eu" "i3 KNX cloud EU" "https://i3knx.eu.iridi.com/" "95.216.162.71"
@@ -180,6 +183,14 @@ switch ($Product) {
             $Resources += New-Resource "projects-eu" "i3 Pro projects EU" "https://iridium-cloud-files.s3.amazonaws.com/" "dynamic"
             $Resources += New-Resource "updates-site" "Update website" "http://iridi.com/" "89.169.183.139"
             $Resources += New-Resource "updates-s3" "Update files" "http://iridium3download.s3.amazonaws.com/" "dynamic"
+        } elseif ($Region -eq "CN") {
+            $GateHosts = @("37.27.5.98")
+            $Resources += New-Resource "auth-cn" "Authorization CN" "https://auth.eu.iridi.com/" "95.216.162.71"
+            $Resources += New-Resource "i3pro-cn" "i3 Pro cloud CN" "https://i3pro.eu.iridi.com/" "95.216.162.71"
+            $Resources += New-Resource "storage-cn" "Alibaba storage CN" "https://ir-endpoint.oss-cn-shanghai.aliyuncs.com/" "dynamic"
+            $Resources += New-Resource "projects-cn" "i3 Pro projects CN" "https://ir-proj-sh.oss-cn-shanghai.aliyuncs.com/" "dynamic"
+            $Resources += New-Resource "updates-site" "Update website" "http://iridi.com/" "89.169.183.139"
+            $Resources += New-Resource "updates-cn" "CN update files" "http://iridium3download.oss-cn-hangzhou.aliyuncs.com/" "dynamic"
         } else {
             $GateHosts = @("85.192.35.27")
             $Resources += New-Resource "auth-ru" "Authorization RU" "https://auth.ru.iridi.com/" "84.201.152.245"
