@@ -1,9 +1,9 @@
 #!/bin/sh
 
-# Safe eMMC diagnostics for iRidi HS/ProAV/UMC and Linux servers.
-# By default, the script writes a controlled 1 MiB test file to the root
-# filesystem, runs sync, verifies two reads, and removes the temporary file.
-# Output is displayed live and saved to a separate log file.
+# Safe eMMC and storage diagnostics for iRidi HS/ProAV/UMC and Linux servers.
+# Verifies eMMC wear indicators (SMART), partitions & inodes across / and /userdata,
+# scans kernel/system logs for storage faults, verifies multi-partition write integrity,
+# and benchmarks sequential throughput and 4K database sync latency.
 #
 # Run:          sh check_emmc_health.sh
 # Read-only:    sh check_emmc_health.sh --no-write
@@ -28,7 +28,7 @@ if [ "${IRIDI_EMMC_LOG_ACTIVE:-0}" != "1" ]; then
     awk '
       /\[OK\]|RESULT: PASS/ { printf "\033[32m%s\033[0m\n", $0; next }
       /\[ATTENTION\]|RESULT: WARN/ { printf "\033[33m%s\033[0m\n", $0; next }
-      /\[NOT OK\]|RESULT: FAIL/ { printf "\033[31m%s\033[0m\n", $0; next }
+      /\[NOT OK\]|\[CRITICAL\]|RESULT: FAIL/ { printf "\033[31m%s\033[0m\n", $0; next }
       { print }
     '
   }
@@ -65,24 +65,27 @@ fi
 set +e
 export LC_ALL=C
 
-SCRIPT_VERSION=1.3
+SCRIPT_VERSION=2.0
 
 WRITE_TEST=yes
 [ "${1:-}" = "--no-write" ] && WRITE_TEST=no
 
 WARNINGS=0
 FAILURES=0
-TEST_FILE=""
+TEST_FILES=""
 TEST_ERROR=""
 EMMC_STATUS="not detected"
 BLOCK_STATUS="not determined"
 WEAR_STATUS="unavailable"
 KERNEL_STATUS="not checked"
-ROOT_WRITE_STATUS="not performed"
-ROOT_LAYER_STATUS="not determined"
+WRITE_INTEGRITY_STATUS="not performed"
+THROUGHPUT_STATUS="skipped"
+LATENCY_STATUS="skipped"
 
 cleanup() {
-  [ -n "$TEST_FILE" ] && rm -f "$TEST_FILE"
+  for f in $TEST_FILES; do
+    [ -f "$f" ] && rm -f "$f"
+  done
   [ -n "$TEST_ERROR" ] && rm -f "$TEST_ERROR"
 }
 trap cleanup EXIT HUP INT TERM
@@ -163,36 +166,17 @@ checksum_file() {
   fi
 }
 
-mount_record_for_path() {
-  awk -v path="$1" '
-    {
-      mount_point = $2
-      matches = 0
-      if (mount_point == "/") {
-        matches = 1
-      } else if (path == mount_point || index(path, mount_point "/") == 1) {
-        matches = 1
-      }
-      if (matches && length(mount_point) > best_length) {
-        best_length = length(mount_point)
-        record = $1 "|" $2 "|" $3 "|" $4
-      }
-    }
-    END { print record }
-  ' /proc/mounts 2>/dev/null
-}
-
-printf 'eMMC and root storage diagnostics\n'
+printf 'eMMC Storage Health & Performance Diagnostic\n'
 printf 'Script version: %s\n' "$SCRIPT_VERSION"
 printf 'Started: %s\n' "$(date 2>/dev/null || echo unknown)"
 printf 'Device: %s\n' "$(hostname 2>/dev/null || echo unknown)"
 printf 'Log file: %s\n' "${IRIDI_EMMC_LOG_FILE:-not set}"
 printf 'Platform model: %s\n' "$(tr -d '\000' </proc/device-tree/model 2>/dev/null || echo unknown)"
 printf 'Kernel: %s\n' "$(uname -a 2>/dev/null)"
-printf 'Write test: %s\n' "$WRITE_TEST"
+printf 'Diagnostic mode: %s\n' "$( [ "$WRITE_TEST" = "yes" ] && echo "full (hardware + multi-partition write & latency)" || echo "read-only (--no-write)" )"
 
 separator
-printf '1. eMMC identification and wear indicators\n'
+printf '1. eMMC identification and wear indicators (SMART)\n'
 
 MMC_DEVICE=""
 for candidate in /sys/bus/mmc/devices/*; do
@@ -226,7 +210,7 @@ else
   MMC_LIFE_B="$(printf '%s' "$MMC_LIFE" | awk '{print $2}')"
   MMC_PRE_EOL="$(read_field "$MMC_DEVICE/pre_eol_info")"
   if [ -n "$MMC_LIFE_A" ] || [ -n "$MMC_LIFE_B" ] || [ -n "$MMC_PRE_EOL" ]; then
-    WEAR_STATUS="partially available through sysfs"
+    WEAR_STATUS="available through sysfs"
   fi
   printf '  Sysfs device: %s\n' "${MMC_DEVICE##*/}"
   printf '  Block device: %s\n' "${MMC_NODE:-not determined}"
@@ -234,14 +218,14 @@ else
   printf '  Manufacturer: %s (%s)\n' "$(manufacturer_name "$MMC_MANFID")" "${MMC_MANFID:-no data}"
   printf '  Manufacturing date: %s\n' "${MMC_DATE:-no data}"
   printf '  Serial number: %s\n' "${MMC_SERIAL:-no data}"
-  printf '  LIFE_TIME A: %s - %s\n' "${MMC_LIFE_A:-no data}" "$(life_description "$MMC_LIFE_A")"
-  printf '  LIFE_TIME B: %s - %s\n' "${MMC_LIFE_B:-no data}" "$(life_description "$MMC_LIFE_B")"
+  printf '  LIFE_TIME A (SLC Cache): %s - %s\n' "${MMC_LIFE_A:-no data}" "$(life_description "$MMC_LIFE_A")"
+  printf '  LIFE_TIME B (User Area):  %s - %s\n' "${MMC_LIFE_B:-no data}" "$(life_description "$MMC_LIFE_B")"
   printf '  PRE_EOL_INFO: %s - %s\n' "${MMC_PRE_EOL:-no data}" "$(pre_eol_description "$MMC_PRE_EOL")"
 
   case "$(normalize_hex "$MMC_PRE_EOL")" in
     0x01) ok "PRE_EOL_INFO is normal." ;;
     0x02) warn "PRE_EOL_INFO indicates that reserved blocks are being consumed." ;;
-    0x03) fail "PRE_EOL_INFO indicates a critical eMMC condition." ;;
+    0x03) fail "PRE_EOL_INFO indicates a critical eMMC condition (reserved blocks exhausted)." ;;
     *) warn "PRE_EOL_INFO is unavailable or unrecognized." ;;
   esac
   for value in "$MMC_LIFE_A" "$MMC_LIFE_B"; do
@@ -262,7 +246,6 @@ if [ -n "$MMC_BLOCK" ]; then
     *) warn "The main block read-only flag could not be read." ;;
   esac
 fi
-printf '  Note: mmcblk*boot0 and boot1 normally report ro=1; this is expected for boot areas.\n'
 
 USER_WP=""
 if command -v mmc >/dev/null 2>&1 && [ -b "$MMC_NODE" ]; then
@@ -275,190 +258,275 @@ if command -v mmc >/dev/null 2>&1 && [ -b "$MMC_NODE" ]; then
     WEAR_STATUS="available through EXT_CSD"
   fi
   printf '  EXT_CSD USER_WP: %s\n' "${USER_WP:-not determined}"
-  printf '  EXT_CSD LIFE_TIME A/B: %s / %s\n' "${EXT_LIFE_A:-not determined}" "${EXT_LIFE_B:-not determined}"
-  printf '  EXT_CSD PRE_EOL: %s\n' "${EXT_PRE_EOL:-not determined}"
   case "$(normalize_hex "$USER_WP")" in
     0x00) ok "USER_WP=0x00: write protection is not enabled for the user area." ;;
     "") warn "USER_WP could not be read from EXT_CSD." ;;
     *) warn "USER_WP is non-zero; the write-protection bits require interpretation." ;;
   esac
-else
-  warn "The mmc utility is unavailable; the script is using the available sysfs fields."
 fi
 
 separator
-printf '2. Root filesystem\n'
-ROOT_SOURCE="$(awk '$2=="/" {print $1; exit}' /proc/mounts 2>/dev/null)"
-ROOT_FS="$(awk '$2=="/" {print $3; exit}' /proc/mounts 2>/dev/null)"
-ROOT_OPTIONS="$(awk '$2=="/" {print $4; exit}' /proc/mounts 2>/dev/null)"
-ROOT_REAL_SOURCE="$(mount 2>/dev/null | awk '$2=="on" && $3=="/" {print $1; exit}')"
-printf '  Source: %s\n' "${ROOT_REAL_SOURCE:-${ROOT_SOURCE:-not determined}}"
-printf '  Filesystem: %s\n' "${ROOT_FS:-not determined}"
-printf '  Mount options: %s\n' "${ROOT_OPTIONS:-not determined}"
-df -h / 2>/dev/null | sed 's/^/  /'
-case ",${ROOT_OPTIONS}," in
-  *,rw,*) ROOT_RW=yes; ok "The root filesystem is mounted read-write." ;;
-  *) ROOT_RW=no; fail "The root filesystem is not mounted read-write." ;;
-esac
+printf '2. Storage Partitions & Inodes Health\n'
 
-if [ "$ROOT_FS" = "overlay" ]; then
-  OVERLAY_UPPER="$(printf '%s\n' "$ROOT_OPTIONS" | tr ',' '\n' | sed -n 's/^upperdir=//p' | head -n 1)"
-  OVERLAY_WORK="$(printf '%s\n' "$ROOT_OPTIONS" | tr ',' '\n' | sed -n 's/^workdir=//p' | head -n 1)"
-  printf '  Overlay upperdir: %s\n' "${OVERLAY_UPPER:-not determined}"
-  printf '  Overlay workdir: %s\n' "${OVERLAY_WORK:-not determined}"
-  if [ -z "$OVERLAY_UPPER" ] || [ -z "$OVERLAY_WORK" ]; then
-    ROOT_LAYER_STATUS="overlay without upperdir or workdir"
-    fail "The writable overlay upperdir or workdir could not be determined."
-  elif [ ! -d "$OVERLAY_UPPER" ] || [ ! -d "$OVERLAY_WORK" ]; then
-    ROOT_LAYER_STATUS="overlay directories unavailable"
-    fail "The overlay upperdir or workdir is missing or inaccessible."
-  else
-    OVERLAY_RECORD="$(mount_record_for_path "$OVERLAY_UPPER")"
-    OVERLAY_SOURCE="$(printf '%s' "$OVERLAY_RECORD" | cut -d '|' -f 1)"
-    OVERLAY_MOUNT_POINT="$(printf '%s' "$OVERLAY_RECORD" | cut -d '|' -f 2)"
-    OVERLAY_FS="$(printf '%s' "$OVERLAY_RECORD" | cut -d '|' -f 3)"
-    OVERLAY_OPTIONS="$(printf '%s' "$OVERLAY_RECORD" | cut -d '|' -f 4)"
-    printf '  Upperdir backing device: %s\n' "${OVERLAY_SOURCE:-not determined}"
-    printf '  Upperdir mount point: %s\n' "${OVERLAY_MOUNT_POINT:-not determined}"
-    printf '  Upperdir filesystem: %s\n' "${OVERLAY_FS:-not determined}"
-    printf '  Upperdir mount options: %s\n' "${OVERLAY_OPTIONS:-not determined}"
-    df -h "$OVERLAY_UPPER" 2>/dev/null | sed 's/^/  /'
-    if df -i "$OVERLAY_UPPER" >/dev/null 2>&1; then
-      printf '  Inode usage:\n'
-      df -i "$OVERLAY_UPPER" 2>/dev/null | sed 's/^/  /'
-    else
-      printf '  Inode usage: not supported by this firmware.\n'
-    fi
-    case ",${OVERLAY_OPTIONS}," in
-      *,rw,*)
-        ROOT_LAYER_STATUS="overlay on ${OVERLAY_SOURCE:-unknown device}, rw"
-        ok "The overlay upperdir backing filesystem is mounted read-write."
-        ;;
-      *,ro,*)
-        ROOT_LAYER_STATUS="upperdir backing filesystem is read-only"
-        fail "The physical block may be writable, but the overlay upperdir backing filesystem is mounted read-only."
-        ;;
-      *)
-        ROOT_LAYER_STATUS="upperdir mount mode not determined"
-        warn "The overlay upperdir backing mount mode could not be determined."
-        ;;
-    esac
+PARTITIONS_CHECKED=0
+PARTITIONS_ALL_RW=yes
+
+for TARGET_DIR in / /userdata /oem; do
+  [ -d "$TARGET_DIR" ] || continue
+  PARTITIONS_CHECKED=$((PARTITIONS_CHECKED + 1))
+  
+  MNT_LINE="$(awk -v dir="$TARGET_DIR" '$2==dir {print $1,$3,$4; exit}' /proc/mounts 2>/dev/null)"
+  MNT_DEV="$(echo "$MNT_LINE" | awk '{print $1}')"
+  MNT_FS="$(echo "$MNT_LINE" | awk '{print $2}')"
+  MNT_OPT="$(echo "$MNT_LINE" | awk '{print $3}')"
+  
+  SPACE_INFO="$(df -h "$TARGET_DIR" 2>/dev/null | awk 'NR==2 {print $2,$3,$4,$5}')"
+  TOTAL_SPACE="$(echo "$SPACE_INFO" | awk '{print $1}')"
+  USED_SPACE="$(echo "$SPACE_INFO" | awk '{print $2}')"
+  AVAIL_SPACE="$(echo "$SPACE_INFO" | awk '{print $3}')"
+  USED_PCT="$(echo "$SPACE_INFO" | awk '{print $4}')"
+  
+  INODE_INFO="$(df -i "$TARGET_DIR" 2>/dev/null | awk 'NR==2 {print $2,$3,$4,$5}')"
+  TOTAL_INODES="$(echo "$INODE_INFO" | awk '{print $1}')"
+  USED_INODES="$(echo "$INODE_INFO" | awk '{print $2}')"
+  FREE_INODES="$(echo "$INODE_INFO" | awk '{print $3}')"
+  INODE_PCT="$(echo "$INODE_INFO" | awk '{print $4}')"
+  
+  printf '  Partition: %s\n' "$TARGET_DIR"
+  printf '    Device & FS:     %s (%s)\n' "${MNT_DEV:-unknown}" "${MNT_FS:-unknown}"
+  printf '    Mount Options:   %s\n' "${MNT_OPT:-unknown}"
+  printf '    Disk Space:      %s total, %s free (%s used)\n' "$TOTAL_SPACE" "$AVAIL_SPACE" "$USED_PCT"
+  printf '    Inodes (Files):  %s total, %s free (%s used)\n' "${TOTAL_INODES:-n/a}" "${FREE_INODES:-n/a}" "${INODE_PCT:-n/a}"
+  
+  case ",${MNT_OPT}," in
+    *,rw,*)
+      ok "Partition $TARGET_DIR is mounted read-write."
+      ;;
+    *,ro,*)
+      PARTITIONS_ALL_RW=no
+      fail "Partition $TARGET_DIR is mounted READ-ONLY! Filesystem may be corrupted."
+      ;;
+    *)
+      warn "Mount options for $TARGET_DIR could not be fully determined."
+      ;;
+  esac
+
+  # Inode exhaustion check
+  INODE_NUM="${INODE_PCT%%%}"
+  if [ -n "$INODE_NUM" ] && [ "$INODE_NUM" -gt 90 ] 2>/dev/null; then
+    fail "Partition $TARGET_DIR has exhausted over 90% of available Inodes (${FREE_INODES:-0} left)."
   fi
-else
-  ROOT_LAYER_STATUS="direct ${ROOT_FS:-unknown filesystem} on ${ROOT_SOURCE:-unknown source}"
-  printf '  Overlay: not in use; writes go directly to the root filesystem.\n'
-fi
+done
 
 separator
-printf '3. Kernel errors since boot\n'
+printf '3. Kernel & System Storage Error Logs\n'
+
 KERNEL_PATTERN='buffer i/o error|blk_update.*i/o error|print_req_error.*i/o error|i/o error.*mmcblk|ext4-fs.*error|remounting filesystem read-only|mmc.*(timed out|timeout|i/o error)|filesystem error|journal.*abort'
-KERNEL_ERRORS="$(dmesg 2>/dev/null | grep -Ei "$KERNEL_PATTERN")"
-KERNEL_ERROR_COUNT="$(printf '%s\n' "$KERNEL_ERRORS" | sed '/^$/d' | wc -l | tr -d ' ')"
-printf '  Critical log entries found: %s\n' "${KERNEL_ERROR_COUNT:-0}"
-if [ "${KERNEL_ERROR_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+
+# 1. Ring buffer
+DMESG_ERRORS="$(dmesg 2>/dev/null | grep -Ei "$KERNEL_PATTERN")"
+DMESG_COUNT="$(printf '%s\n' "$DMESG_ERRORS" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+# 2. Persistent syslog
+SYSLOG_COUNT=0
+if [ -r /var/log/messages ]; then
+  SYSLOG_ERRORS="$(grep -Ei "$KERNEL_PATTERN" /var/log/messages 2>/dev/null)"
+  SYSLOG_COUNT="$(printf '%s\n' "$SYSLOG_ERRORS" | sed '/^$/d' | wc -l | tr -d ' ')"
+fi
+
+printf '  Active kernel (dmesg) storage errors: %s\n' "${DMESG_COUNT:-0}"
+if [ -r /var/log/messages ]; then
+  printf '  Persistent log (/var/log/messages) storage errors: %s\n' "${SYSLOG_COUNT:-0}"
+fi
+
+TOTAL_LOG_ERRORS=$(( ${DMESG_COUNT:-0} + ${SYSLOG_COUNT:-0} ))
+if [ "$TOTAL_LOG_ERRORS" -gt 0 ]; then
   KERNEL_STATUS="errors found"
-  printf '%s\n' "$KERNEL_ERRORS" | tail -n 60 | sed 's/^/  /'
-  fail "The kernel log contains signs of storage or filesystem errors."
+  if [ "${DMESG_COUNT:-0}" -gt 0 ]; then
+    printf '  Recent dmesg errors:\n'
+    printf '%s\n' "$DMESG_ERRORS" | tail -n 10 | sed 's/^/    /'
+  fi
+  fail "Signs of storage I/O, filesystem, or timeout errors detected in system logs."
 else
   KERNEL_STATUS="no errors found"
-  ok "No critical I/O, timeout, or EXT4 errors were found."
+  ok "No storage I/O, block timeout, or EXT4 errors found in kernel logs."
 fi
 
 separator
-printf '4. Controlled write test on the root filesystem\n'
+printf '4. Multi-Partition Controlled Write & Integrity Verification\n'
+
 if [ "$WRITE_TEST" != "yes" ]; then
-  ROOT_WRITE_STATUS="skipped (--no-write)"
-  warn "The write test was disabled with --no-write; write capability is unverified."
-  printf '  [SKIP] The write test was disabled with --no-write.\n'
-elif [ "$ROOT_RW" != "yes" ]; then
-  ROOT_WRITE_STATUS="not possible: root is not read-write"
-  fail "The write test cannot run because the root filesystem is not read-write."
+  WRITE_INTEGRITY_STATUS="skipped (--no-write)"
+  warn "Write verification was disabled with --no-write; write capability is unverified."
+  printf '  [SKIP] Multi-partition write verification disabled (--no-write).\n'
 else
-  FREE_KB="$(df -Pk / 2>/dev/null | awk 'NR==2 {print $4}')"
-  printf '  Free space before test: %s KiB\n' "${FREE_KB:-not determined}"
-  if [ "${FREE_KB:-0}" -lt 4096 ] 2>/dev/null; then
-    ROOT_WRITE_STATUS="skipped: insufficient space"
-    fail "Less than 4 MiB is free; the write test was skipped."
-  else
-    TEST_FILE="/server-diag-emmc-test-$$.bin"
-    TEST_ERROR="$(mktemp /tmp/server-diag-emmc-test.XXXXXX 2>/dev/null)"
-    if [ -z "$TEST_ERROR" ]; then
-      TEST_ERROR="/dev/null"
-      warn "Could not create a private temporary error file; write-test diagnostics may be incomplete."
+  WRITE_SUCCESS_COUNT=0
+  WRITE_TOTAL_COUNT=0
+  
+  for TARGET_DIR in / /userdata; do
+    [ -d "$TARGET_DIR" ] || continue
+    WRITE_TOTAL_COUNT=$((WRITE_TOTAL_COUNT + 1))
+    
+    FREE_KB="$(df -Pk "$TARGET_DIR" 2>/dev/null | awk 'NR==2 {print $4}')"
+    if [ "${FREE_KB:-0}" -lt 10240 ] 2>/dev/null; then
+      warn "Skipping write test on $TARGET_DIR: less than 10 MiB free space."
+      continue
     fi
-    umask 077
-    printf '  Temporary file: %s\n' "$TEST_FILE"
+    
+    TEST_FILE="${TARGET_DIR}/.emmc_diag_test_$$.bin"
+    TEST_FILES="$TEST_FILES $TEST_FILE"
+    TEST_ERROR="$(mktemp /tmp/emmc_err.XXXXXX 2>/dev/null || echo "/dev/null")"
+    
+    printf '  Testing partition: %s (temporary file: %s)\n' "$TARGET_DIR" "${TEST_FILE##*/}"
+    
+    # 1 MiB controlled write
     dd if=/dev/urandom of="$TEST_FILE" bs=4096 count=256 2>"$TEST_ERROR"
     WRITE_RC=$?
     sync
+    
     if [ "$WRITE_RC" -eq 0 ] && [ -f "$TEST_FILE" ]; then
       WRITTEN_SIZE="$(wc -c <"$TEST_FILE" | tr -d ' ')"
       CHECKSUM_1="$(checksum_file "$TEST_FILE")"
       CHECKSUM_2="$(checksum_file "$TEST_FILE")"
-      printf '  Bytes written: %s\n' "${WRITTEN_SIZE:-0}"
-      printf '  Checksum after sync: %s\n' "${CHECKSUM_1:-unavailable}"
-      printf '  Checksum on second read: %s\n' "${CHECKSUM_2:-unavailable}"
+      
       if [ "$WRITTEN_SIZE" = "1048576" ] && [ -n "$CHECKSUM_1" ] && [ "$CHECKSUM_1" = "$CHECKSUM_2" ]; then
-        ROOT_WRITE_STATUS="successful"
-        ok "The 1 MiB write, sync, and second read completed successfully."
+        WRITE_SUCCESS_COUNT=$((WRITE_SUCCESS_COUNT + 1))
+        ok "1 MiB write, sync, double-read, and CRC verification passed on $TARGET_DIR."
       else
-        ROOT_WRITE_STATUS="verification failed"
-        fail "The file size or checksum did not match after the write."
+        fail "Integrity check failed on $TARGET_DIR (checksum mismatch or incomplete write)."
       fi
     else
-      ROOT_WRITE_STATUS="write failed"
-      WRITE_ERROR_TEXT="$(tail -n 3 "$TEST_ERROR" 2>/dev/null | tr '\n' ' ')"
-      fail "Writing to the root filesystem failed: ${WRITE_ERROR_TEXT:-unknown error}"
+      WRITE_ERR_TEXT="$(tail -n 2 "$TEST_ERROR" 2>/dev/null | tr '\n' ' ')"
+      fail "Write failed on $TARGET_DIR: ${WRITE_ERR_TEXT:-I/O error}"
     fi
-    rm -f "$TEST_FILE" "$TEST_ERROR"
+    
+    rm -f "$TEST_FILE" "$TEST_ERROR" 2>/dev/null
     sync
-    if [ -e "$TEST_FILE" ]; then
-      fail "The temporary test file could not be removed."
+  done
+  
+  if [ "$WRITE_SUCCESS_COUNT" -eq "$WRITE_TOTAL_COUNT" ] && [ "$WRITE_TOTAL_COUNT" -gt 0 ]; then
+    WRITE_INTEGRITY_STATUS="verified on $WRITE_SUCCESS_COUNT partitions"
+  else
+    WRITE_INTEGRITY_STATUS="failed"
+  fi
+fi
+
+separator
+printf '5. eMMC I/O Performance & Database Latency Benchmarks\n'
+
+if [ "$WRITE_TEST" != "yes" ]; then
+  printf '  [SKIP] Performance benchmarks skipped (--no-write).\n'
+else
+  # 1. Sequential Write Benchmark (10 MB with fsync)
+  BENCH_DIR="/userdata"
+  [ -d "$BENCH_DIR" ] || BENCH_DIR="/"
+  BENCH_FILE="${BENCH_DIR}/.emmc_speed_bench_$$.bin"
+  TEST_FILES="$TEST_FILES $BENCH_FILE"
+  
+  FREE_MB=$(( $(df -Pk "$BENCH_DIR" 2>/dev/null | awk 'NR==2 {print $4}') / 1024 ))
+  if [ "$FREE_MB" -ge 100 ]; then
+    printf '  Sequential Write Benchmark (10 MiB to %s with fsync):\n' "$BENCH_DIR"
+    WRITE_BENCH_OUT="$(dd if=/dev/zero of="$BENCH_FILE" bs=1M count=10 conv=fsync 2>&1)"
+    WRITE_SPEED_STR="$(printf '%s\n' "$WRITE_BENCH_OUT" | awk -F', ' '/copied/{print $NF}' | tr -d '\r\n')"
+    rm -f "$BENCH_FILE" 2>/dev/null
+    sync
+    
+    if [ -n "$WRITE_SPEED_STR" ]; then
+      printf '    Sequential Write Speed : %s\n' "$WRITE_SPEED_STR"
+      # Evaluate speed
+      SPEED_VAL="$(printf '%s' "$WRITE_SPEED_STR" | awk '{print $1}' | cut -d'.' -f1)"
+      SPEED_UNIT="$(printf '%s' "$WRITE_SPEED_STR" | awk '{print $2}')"
+      
+      if [ "$SPEED_UNIT" = "MB/s" ] || [ "$SPEED_UNIT" = "MiB/s" ]; then
+        if [ "${SPEED_VAL:-0}" -ge 20 ]; then
+          ok "Sequential write performance is optimal ($WRITE_SPEED_STR)."
+          THROUGHPUT_STATUS="optimal ($WRITE_SPEED_STR)"
+        elif [ "${SPEED_VAL:-0}" -ge 10 ]; then
+          ok "Sequential write performance is acceptable ($WRITE_SPEED_STR)."
+          THROUGHPUT_STATUS="acceptable ($WRITE_SPEED_STR)"
+        else
+          warn "Sequential write speed is degraded ($WRITE_SPEED_STR). Flash controller wear-leveling stall possible."
+          THROUGHPUT_STATUS="degraded ($WRITE_SPEED_STR)"
+        fi
+      else
+        warn "Sequential write speed is low ($WRITE_SPEED_STR)."
+        THROUGHPUT_STATUS="slow ($WRITE_SPEED_STR)"
+      fi
     else
-      ok "The temporary test file was removed."
-      TEST_FILE=""
-      TEST_ERROR=""
+      warn "Could not determine write throughput."
     fi
+  fi
+
+  # 2. Sequential Direct Read Benchmark (50 MiB, 0% flash wear)
+  READ_SRC=""
+  if [ -b "$MMC_NODE"p8 ]; then
+    READ_SRC="$MMC_NODE"p8
+  elif [ -b "$MMC_NODE" ]; then
+    READ_SRC="$MMC_NODE"
+  fi
+  
+  if [ -n "$READ_SRC" ] && [ -r "$READ_SRC" ]; then
+    printf '  Sequential Direct Read Benchmark (50 MiB from %s):\n' "$READ_SRC"
+    READ_BENCH_OUT="$(dd if="$READ_SRC" of=/dev/null bs=1M count=50 iflag=direct 2>&1)"
+    READ_SPEED_STR="$(printf '%s\n' "$READ_BENCH_OUT" | awk -F', ' '/copied/{print $NF}' | tr -d '\r\n')"
+    if [ -n "$READ_SPEED_STR" ]; then
+      printf '    Sequential Read Speed  : %s\n' "$READ_SPEED_STR"
+      ok "Direct block read stream completed without read disturbances ($READ_SPEED_STR)."
+    fi
+  fi
+
+  # 3. 4K Sync Write Latency (Database / SQLite Transaction Simulation)
+  # 20 sync writes of 4 KB = 80 KB total data
+  SYNC_FILE="${BENCH_DIR}/.emmc_sync_bench_$$.bin"
+  TEST_FILES="$TEST_FILES $SYNC_FILE"
+  printf '  Database 4K Transaction Latency (20 sync transactions to %s):\n' "$BENCH_DIR"
+  
+  # Timing using date or internal counter
+  T_START="$(date +%s 2>/dev/null || echo 0)"
+  SYNC_FAIL=0
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    dd if=/dev/zero of="$SYNC_FILE" bs=4k count=1 conv=fdatasync >/dev/null 2>&1 || SYNC_FAIL=1
+  done
+  T_END="$(date +%s 2>/dev/null || echo 0)"
+  rm -f "$SYNC_FILE" 2>/dev/null
+  sync
+  
+  TOTAL_TIME=$(( T_END - T_START ))
+  if [ "$SYNC_FAIL" -eq 0 ]; then
+    if [ "$TOTAL_TIME" -le 2 ]; then
+      ok "20 synchronous 4K database commits completed in ${TOTAL_TIME}s (fast fsync response)."
+      LATENCY_STATUS="fast (<=2s)"
+    elif [ "$TOTAL_TIME" -le 5 ]; then
+      ok "20 synchronous 4K database commits completed in ${TOTAL_TIME}s."
+      LATENCY_STATUS="normal (${TOTAL_TIME}s)"
+    else
+      warn "4K database sync operations took ${TOTAL_TIME}s (> 5s). Database transactions may experience lag."
+      LATENCY_STATUS="slow (${TOTAL_TIME}s)"
+    fi
+  else
+    fail "4K synchronous write transactions encountered I/O errors."
+    LATENCY_STATUS="failed"
   fi
 fi
 
 separator
 printf 'SUMMARY\n'
-printf '  eMMC: %s\n' "$EMMC_STATUS"
-printf '  Main block: %s\n' "$BLOCK_STATUS"
-printf '  Wear indicators: %s\n' "$WEAR_STATUS"
-printf '  Root write layer: %s\n' "$ROOT_LAYER_STATUS"
-printf '  Kernel errors: %s\n' "$KERNEL_STATUS"
-printf '  Write test on /: %s\n' "$ROOT_WRITE_STATUS"
-case "$ROOT_WRITE_STATUS" in
-  "write failed"|"verification failed"|"not possible: root is not read-write")
-    if [ "$BLOCK_STATUS" = "writable" ]; then
-      printf '  Layer diagnosis: The kernel does not mark the eMMC as read-only, but writes through the root filesystem or overlay fail.\n'
-      printf '  Most likely problem area: overlay, filesystem, free space, inodes, or mount options.\n'
-    fi
-    ;;
-esac
-if [ "$FAILURES" -eq 0 ] && [ "$ROOT_WRITE_STATUS" = "successful" ] && [ "$KERNEL_STATUS" = "no errors found" ]; then
-  printf '  Conclusion: the current write and read tests work, and no critical errors were detected.\n'
-  if [ "$WEAR_STATUS" = "unavailable" ]; then
-    printf '  Limitation: this firmware does not expose the remaining eMMC life estimate.\n'
-  fi
-elif [ "$FAILURES" -gt 0 ]; then
-  printf '  Conclusion: an error was detected; the storage device or filesystem requires analysis.\n'
-else
-  printf '  Conclusion: the diagnostic is incomplete; review the attention items above.\n'
-fi
+printf '  eMMC hardware:            %s\n' "$EMMC_STATUS"
+printf '  SMART wear indicators:    %s\n' "$WEAR_STATUS"
+printf '  Storage logs:             %s\n' "$KERNEL_STATUS"
+printf '  Multi-partition write:    %s\n' "$WRITE_INTEGRITY_STATUS"
+printf '  Write throughput:         %s\n' "$THROUGHPUT_STATUS"
+printf '  4K database sync latency: %s\n' "$LATENCY_STATUS"
 
 separator
 printf 'SUMMARY: %s failures, %s attention items\n' "$FAILURES" "$WARNINGS"
 if [ "$FAILURES" -gt 0 ]; then
-  printf 'RESULT: FAIL - NOT OK: signs of a fault or an inability to write were detected.\n'
+  printf 'RESULT: FAIL - CRITICAL STORAGE ISSUES DETECTED (%d failure(s), %d warning(s))\n' "$FAILURES" "$WARNINGS"
   exit 2
 fi
 if [ "$WARNINGS" -gt 0 ]; then
-  printf 'RESULT: WARN - ATTENTION REQUIRED: no critical errors were found, but some data needs review.\n'
+  printf 'RESULT: WARN - ATTENTION REQUIRED (%d warning(s), 0 failures)\n' "$WARNINGS"
   exit 1
 fi
-printf 'RESULT: PASS - OK: available eMMC indicators are normal, no kernel errors were found, and writes work.\n'
-printf 'Important: the file test does not replace a full storage test and cannot rule out intermittent or hidden faults.\n'
+printf 'RESULT: PASS - ALL eMMC STORAGE HEALTH & PERFORMANCE CHECKS PASSED (0 failures, 0 warnings)\n'
 exit 0

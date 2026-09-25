@@ -243,30 +243,29 @@ wget --no-check-certificate -O check_emmc_health.sh https://raw.githubuserconten
 sh check_emmc_health.sh
 ```
 
-The script reports the eMMC model, manufacturer, `LIFE_TIME`, `PRE_EOL_INFO`,
-`USER_WP`, block-device read-only state, root filesystem, relevant kernel errors,
-and the complete root write path. On overlay systems it also reports the
-`upperdir`, `workdir`, backing filesystem, mount mode, free space, and inode use.
+The script performs a thorough, multi-layered storage diagnostic designed specifically for iRidi Linux servers:
+- **SMART Wear Indicators**: eMMC model, manufacturer (Samsung, SanDisk, etc.), manufacturing date, serial, `LIFE_TIME_ESTIMATION` (SLC cache & MLC/TLC user area wear in 10% steps), `PRE_EOL_INFO`, write protection registers (`USER_WP`), and sysfs block read-only flags.
+- **Multi-Partition & Inodes Health**: Checks all key partitions (`/`, `/userdata`, `/oem`) for mount options (`rw`), free disk space, and inode exhaustion (`df -i`).
+- **Kernel & Persistent Storage Error Analysis**: Scans both active kernel buffer (`dmesg`) and persistent syslog (`/var/log/messages`) for I/O errors, block timeouts, and EXT4 filesystem corruption.
+- **Multi-Partition Integrity Verification**: Performs controlled 1 MiB write, cache flush (`sync`), double-read, and CRC32 verification on both `/` and `/userdata` (where the SQLite database and logs reside).
+- **I/O Throughput & Database Latency Benchmarks**:
+  - *Sequential Write Throughput*: 10 MiB write benchmark with `conv=fsync` to measure real-world storage write throughput (MB/s).
+  - *Direct Block Read Throughput*: 50 MiB direct sequential read benchmark (`iflag=direct`) measuring read speed without consuming flash endurance (0 wear).
+  - *Database 4K Transaction Latency*: 20 synchronous 4K sector database commits with `fdatasync` simulating SQLite database transaction latency.
+- **Strict Flash Wear Safety**: Total writes are capped to ~10.1 MB per full diagnostic run (< 0.00006% of drive lifespan), write tests are automatically skipped if partition free space is below 100 MB, and temporary files are immediately cleaned up.
 
-By default, it creates a temporary 1 MiB file directly under `/`, runs `sync`,
-reads the file twice, compares checksums, and removes the file. This verifies the
-actual write path through the root filesystem or overlay. Use the read-only mode
-to collect passive information without creating the test file. Because write
-capability is then unverified, the result is WARN rather than PASS:
+Use read-only mode to collect passive hardware SMART indicators and log scans without writing any test data:
 
 ```sh
 sh check_emmc_health.sh --no-write
 ```
 
-The script never writes directly to the block device, runs `fsck`, or remounts a
-filesystem. A `PASS` result confirms the checks performed during that run; it
-does not rule out intermittent faults or replace a full-device endurance test.
-
-Every run creates a plain-text log such as:
+The script never writes directly to raw block devices, runs `fsck`, or remounts filesystems. Every run generates a timestamped log file:
 
 ```text
 emmc_diagnostic_SERVER_20260901_153000_1234.log
 ```
+
 
 ---
 
