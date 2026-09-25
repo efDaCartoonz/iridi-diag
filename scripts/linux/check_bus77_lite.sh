@@ -1,83 +1,11 @@
 #!/bin/sh
 
 # Standalone Bus77 Lite cloud diagnostic.
-# Usage: sh check_bus77_lite.sh
+# Usage: sh check_bus77_lite.sh [--quality]
 
-for arg in "$@"; do
-  case "$arg" in
-    --help|-h)
-      printf 'Usage: sh %s [options]\n\n' "$0"
-      printf 'Options:\n'
-      printf '  --quality, --deep, -q   Run extended channel quality, latency, MTU, and throughput tests\n'
-      printf '  -h, --help              Show this help message\n\n'
-      exit 0
-      ;;
-  esac
-done
-
-# Live output and automatic per-run log for POSIX sh and BusyBox.
-if [ "${IRIDI_CLOUD_LOG_ACTIVE:-0}" != "1" ]; then
-  CURRENT_DIRECTORY="$(pwd 2>/dev/null || printf '.')"
-  LOG_DIRECTORY="${IRIDI_DIAG_LOG_DIR:-$CURRENT_DIRECTORY}"
-  if [ ! -d "$LOG_DIRECTORY" ] || [ ! -w "$LOG_DIRECTORY" ]; then
-    LOG_DIRECTORY="${TMPDIR:-/tmp}"
-  fi
-  SCRIPT_BASENAME="${0##*/}"
-  TOOL_SLUG="${SCRIPT_BASENAME%.sh}"
-  TOOL_SLUG="${TOOL_SLUG#check_}"
-  TOOL_SLUG="$(printf '%s' "$TOOL_SLUG" | tr -c 'A-Za-z0-9._-' '_')"
-  HOST_LABEL="$(hostname 2>/dev/null || printf server)"
-  HOST_LABEL="$(printf '%s' "$HOST_LABEL" | tr -c 'A-Za-z0-9._-' '_')"
-  LOG_TIMESTAMP="$(date '+%Y%m%d_%H%M%S' 2>/dev/null || printf unknown_time)"
-  LOG_FILE="$LOG_DIRECTORY/cloud_${TOOL_SLUG}_${HOST_LABEL}_${LOG_TIMESTAMP}_$$.log"
-  export IRIDI_CLOUD_LOG_ACTIVE=1
-  export IRIDI_CLOUD_LOG_FILE="$LOG_FILE"
-
-  colorize_output() {
-    awk '
-      /\[OK\]|RESULT: PASS/ { printf "\033[32m%s\033[0m\n", $0; next }
-      /\[ATTENTION\]|RESULT: WARN/ { printf "\033[33m%s\033[0m\n", $0; next }
-      /\[NOT OK\]|RESULT: FAIL/ { printf "\033[31m%s\033[0m\n", $0; next }
-      { print }
-    '
-  }
-
-  if command -v tee >/dev/null 2>&1; then
-    if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && command -v awk >/dev/null 2>&1; then
-      sh "$0" "$@" 2>&1 | tee "$LOG_FILE" | colorize_output
-    else
-      sh "$0" "$@" 2>&1 | tee "$LOG_FILE"
-    fi
-    PIPELINE_RC=$?
-    RESULT_LINE="$(grep '^RESULT:' "$LOG_FILE" 2>/dev/null | tail -n 1)"
-    case "$RESULT_LINE" in
-      *PASS*) FINAL_RC=0 ;;
-      *WARN*) FINAL_RC=1 ;;
-      *FAIL*) FINAL_RC=2 ;;
-      *) FINAL_RC=2 ;;
-    esac
-    if [ "$PIPELINE_RC" -ne 0 ]; then
-      FINAL_RC=2
-      printf '[NOT OK] The log file could not be written completely.\n'
-    fi
-    printf '\nLog saved: %s\n' "$LOG_FILE" | tee -a "$LOG_FILE"
-    exit "$FINAL_RC"
-  fi
-
-  sh "$0" "$@" >"$LOG_FILE" 2>&1
-  FINAL_RC=$?
-  cat "$LOG_FILE"
-  printf '\nLog saved: %s\n' "$LOG_FILE"
-  exit "$FINAL_RC"
-fi
-
-set +e
-export LC_ALL=C
-
-TOOL_VERSION=1.4
-USER_AGENT="iridi-diag/bus77-lite/$TOOL_VERSION"
-
+TOOL_VERSION="1.5"
 QUALITY_MODE=0
+
 for arg in "$@"; do
   case "$arg" in
     --quality|--deep|--extended|-q)
@@ -90,9 +18,73 @@ for arg in "$@"; do
       printf '  -h, --help              Show this help message\n\n'
       exit 0
       ;;
+    *)
+      printf 'Unknown option: %s\n' "$arg"
+      exit 2
+      ;;
   esac
 done
 
+# Setup logging directory & technical log file
+CURRENT_DIR="$(pwd 2>/dev/null || printf '.')"
+LOG_DIR="${IRIDI_DIAG_LOG_DIR:-$CURRENT_DIR}"
+if [ ! -d "$LOG_DIR" ] || [ ! -w "$LOG_DIR" ]; then
+  LOG_DIR="${TMPDIR:-/tmp}"
+fi
+
+HOST_LABEL="$(hostname 2>/dev/null || printf server)"
+HOST_LABEL="$(printf '%s' "$HOST_LABEL" | tr -c 'A-Za-z0-9._-' '_')"
+TIMESTAMP="$(date '+%Y%m%d_%H%M%S' 2>/dev/null || printf unknown_time)"
+LOG_FILE="$LOG_DIR/cloud_bus77_lite_${HOST_LABEL}_${TIMESTAMP}_$$.log"
+
+# Open File Descriptor 3 for technical log
+if ! exec 3>>"$LOG_FILE" 2>/dev/null; then
+  LOG_FILE="${TMPDIR:-/tmp}/cloud_bus77_lite_${HOST_LABEL}_${TIMESTAMP}_$$.log"
+  if ! exec 3>>"$LOG_FILE"; then
+    printf '[NOT OK] Could not open log file for writing: %s\n' "$LOG_FILE" >&2
+    exit 2
+  fi
+fi
+
+# Terminal colors (screen only)
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_RESET="$(printf '\033[0m')"
+  C_BOLD="$(printf '\033[1m')"
+  C_DIM="$(printf '\033[2m')"
+  C_GREEN="$(printf '\033[32m')"
+  C_YELLOW="$(printf '\033[33m')"
+  C_RED="$(printf '\033[31m')"
+  C_CYAN="$(printf '\033[36m')"
+  C_GRAY="$(printf '\033[90m')"
+else
+  C_RESET=""
+  C_BOLD=""
+  C_DIM=""
+  C_GREEN=""
+  C_YELLOW=""
+  C_RED=""
+  C_CYAN=""
+  C_GRAY=""
+fi
+
+log_tech() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$*" >&3
+}
+
+log_tech_file() {
+  _HEADER="$1"
+  _FILE="$2"
+  if [ -s "$_FILE" ]; then
+    printf '[%s] --- BEGIN %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_HEADER" >&3
+    cat "$_FILE" >&3 2>/dev/null
+    printf '[%s] --- END %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_HEADER" >&3
+  fi
+}
+
+set +e
+export LC_ALL=C
+
+USER_AGENT="iridi-diag/bus77-lite/$TOOL_VERSION"
 REGION="Bus77 Lite"
 GATE_HOSTS="37.27.5.98 85.192.35.27"
 QUALITY_LATENCY_URL="https://auth.ru.iridi.com/"
@@ -102,9 +94,13 @@ QUALITY_THROUGHPUT_LABEL="iRidi portal (www.iridi.com)"
 QUALITY_MTU_HOST="auth.ru.iridi.com"
 MAX_ATTEMPTS=3
 RETRY_DELAY=1
-TOTAL=0
-OK_COUNT=0
-FAIL_COUNT=0
+CONNECT_TIMEOUT=6
+REQUEST_TIMEOUT=15
+GATE_TIMEOUT=5
+
+HTTP_TOTAL=0
+HTTP_OK=0
+HTTP_FAIL=0
 WARN_COUNT=0
 GATE_FAILED=0
 GATE_STATUS="not checked"
@@ -114,11 +110,30 @@ if [ -z "$WORK_DIR" ] || [ ! -d "$WORK_DIR" ]; then
   WORK_DIR="${TMPDIR:-/tmp}/bus77-lite.$$"
   mkdir -p "$WORK_DIR" || exit 2
 fi
-trap 'rm -rf "$WORK_DIR"' EXIT HUP INT TERM
 
-separator() {
-  printf '%s\n' '----------------------------------------------------------------'
+cleanup() {
+  rm -rf "$WORK_DIR" 2>/dev/null || true
+  exec 3>&- 2>/dev/null || true
 }
+trap cleanup EXIT HUP INT TERM
+
+# Technical Log Initial Header
+log_tech "================================================================================"
+log_tech "iRidi Cloud Diagnostics (Linux) - Technical Log"
+log_tech "Profile: $REGION | Version: $TOOL_VERSION"
+log_tech "Host: $(hostname 2>/dev/null) | OS: $(uname -srm 2>/dev/null)"
+log_tech "Start Time: $(date 2>/dev/null)"
+log_tech "Quality Mode: $QUALITY_MODE"
+log_tech "Log File: $LOG_FILE"
+log_tech "================================================================================"
+
+# Screen Header
+printf '%s================================================================%s\n' "$C_CYAN" "$C_RESET"
+printf '  %siRidi Cloud Diagnostics%s — %s%s%s (v%s)\n' "$C_BOLD" "$C_RESET" "$C_CYAN" "$REGION" "$C_RESET" "$TOOL_VERSION"
+printf '%s================================================================%s\n' "$C_CYAN" "$C_RESET"
+printf 'Host: %s | OS: %s\n' "$(hostname 2>/dev/null || printf unknown)" "$(uname -srm 2>/dev/null || printf Linux)"
+[ "$QUALITY_MODE" -eq 1 ] && printf 'Mode: %sExtended Quality & Stability Analysis%s\n' "$C_BOLD" "$C_RESET"
+printf '\n'
 
 resolve_host() {
   RESOLVED_IP=""
@@ -140,7 +155,7 @@ probe_resource() {
   RESOURCE_URL="$3"
   EXPECTED_IP="$4"
   FOLLOW_REDIRECTS="$5"
-  TOTAL=$((TOTAL + 1))
+  HTTP_TOTAL=$((HTTP_TOTAL + 1))
 
   BODY_FILE="$WORK_DIR/$RESOURCE_ID.body"
   HEADER_FILE="$WORK_DIR/$RESOURCE_ID.headers"
@@ -149,6 +164,9 @@ probe_resource() {
   RESOURCE_HOST="${RESOURCE_HOST%%/*}"
   RESOURCE_HOST="${RESOURCE_HOST%%:*}"
   resolve_host "$RESOURCE_HOST"
+
+  log_tech "PROBE START: $RESOURCE_LABEL ($RESOURCE_URL)"
+  log_tech "  Host: $RESOURCE_HOST -> Resolved IP: ${RESOLVED_IP:-unresolved} (Expected IP: $EXPECTED_IP)"
 
   ATTEMPT=1
   while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
@@ -166,8 +184,9 @@ probe_resource() {
       CLIENT="curl"
       REDIRECT_ARGS="--max-redirs 0"
       [ "$FOLLOW_REDIRECTS" = "yes" ] && REDIRECT_ARGS="--location --max-redirs 3"
-      META="$(curl --insecure $REDIRECT_ARGS --connect-timeout 6 --max-time 15 \
-        --silent --show-error --header 'Accept: application/json, text/plain, */*' \
+      META="$(curl --insecure $REDIRECT_ARGS --connect-timeout "$CONNECT_TIMEOUT" --max-time "$REQUEST_TIMEOUT" \
+        --silent --show-error --dump-header "$HEADER_FILE" \
+        --header 'Accept: application/json, text/plain, */*' \
         --user-agent "$USER_AGENT" --output "$BODY_FILE" \
         --write-out '%{http_code}|%{remote_ip}|%{content_type}|%{size_download}|%{time_total}' \
         "$RESOURCE_URL" 2>"$ERROR_FILE")"
@@ -182,14 +201,14 @@ probe_resource() {
       REMOTE_IP="${2:-}"
       CONTENT_TYPE="${3:-}"
       BODY_SIZE="${4:-0}"
-      ELAPSED="${5:-n/a} s"
+      ELAPSED="${5:-n/a}"
     elif command -v wget >/dev/null 2>&1; then
       CLIENT="wget"
       WGET_REDIRECT="--max-redirect=0"
       [ "$FOLLOW_REDIRECTS" = "yes" ] && WGET_REDIRECT="--max-redirect=3"
       WGET_TLS=""
       wget --help 2>&1 | grep -q -e '--no-check-certificate' && WGET_TLS="--no-check-certificate"
-      wget $WGET_TLS $WGET_REDIRECT -T 15 -t 1 -S -O "$BODY_FILE" \
+      wget $WGET_TLS $WGET_REDIRECT -T "$REQUEST_TIMEOUT" -t 1 -S -O "$BODY_FILE" \
         --header='Accept: application/json, text/plain, */*' \
         --user-agent="$USER_AGENT" "$RESOURCE_URL" \
         2>"$HEADER_FILE"
@@ -201,6 +220,10 @@ probe_resource() {
     else
       break
     fi
+
+    log_tech "  Attempt $ATTEMPT/$MAX_ATTEMPTS: client=$CLIENT rc=$CLIENT_RC http_code=$HTTP_CODE ip=$REMOTE_IP elapsed=${ELAPSED}s size=${BODY_SIZE}B"
+    [ -s "$HEADER_FILE" ] && log_tech_file "HTTP Headers ($RESOURCE_ID)" "$HEADER_FILE"
+    [ -s "$ERROR_FILE" ] && log_tech_file "Client Errors ($RESOURCE_ID)" "$ERROR_FILE"
 
     case "$HTTP_CODE" in
       2??|3??|4??|5??) HTTP_RECEIVED=yes ;;
@@ -217,93 +240,98 @@ probe_resource() {
   esac
   [ "$AVAILABLE" = "yes" ] && [ -z "$REMOTE_IP" ] && REMOTE_IP="$RESOLVED_IP"
 
-  separator
-  printf '%s\n' "$RESOURCE_LABEL"
-  printf '  URL:              %s\n' "$RESOURCE_URL"
-  printf '  DNS:              %s -> %s\n' "$RESOURCE_HOST" "${RESOLVED_IP:-not resolved}"
-  printf '  Documented IP:    %s\n' "$EXPECTED_IP"
-  printf '  Actual IP:        %s\n' "${REMOTE_IP:-not detected}"
-  printf '  HTTP client:      %s\n' "$CLIENT"
-  printf '  Attempt:          %s of %s\n' "$ATTEMPT" "$MAX_ATTEMPTS"
-  printf '  HTTP response:    %s\n' "${HTTP_CODE:-0}"
-  printf '  Content-Type:     %s\n' "${CONTENT_TYPE:-not provided}"
-  printf '  Payload:          %s bytes\n' "${BODY_SIZE:-0}"
-  [ "$ELAPSED" != "n/a" ] && printf '  Request time:     %s\n' "$ELAPSED"
+  ELAPSED_MS="n/a"
+  if [ "$ELAPSED" != "n/a" ]; then
+    ELAPSED_MS="$(awk -v t="$ELAPSED" 'BEGIN { printf "%dms", (t * 1000) }' 2>/dev/null || printf '%ss' "$ELAPSED")"
+  fi
 
+  IP_INFO="${REMOTE_IP:-unresolved}"
+  IP_WARN=""
   if [ "$EXPECTED_IP" != "dynamic" ] && [ -n "$REMOTE_IP" ] && [ "$REMOTE_IP" != "$EXPECTED_IP" ]; then
-    printf '  [ATTENTION] The actual IP differs from the documented IP (a CDN, proxy, or gateway may be in use).\n'
-    WARN_COUNT=$((WARN_COUNT + 1))
+    IP_WARN=" (expected $EXPECTED_IP)"
   fi
 
   if [ "$AVAILABLE" = "yes" ]; then
-    if [ "$ATTEMPT" -gt 1 ]; then
-      printf '  [ATTENTION] A response was received after a retry; the connection may be unstable.\n'
+    HTTP_OK=$((HTTP_OK + 1))
+    if [ -n "$IP_WARN" ] || [ "$ATTEMPT" -gt 1 ]; then
       WARN_COUNT=$((WARN_COUNT + 1))
+      printf '  %s[ATTENTION]%s %-26s %s (HTTP %s, %s, IP: %s%s)\n' \
+        "$C_YELLOW" "$C_RESET" "$RESOURCE_LABEL" "$RESOURCE_HOST" "$HTTP_CODE" "$ELAPSED_MS" "$IP_INFO" "$IP_WARN"
+      [ "$ATTEMPT" -gt 1 ] && printf '              %s! Succeeded on retry attempt %s of %s%s\n' "$C_DIM" "$ATTEMPT" "$MAX_ATTEMPTS" "$C_RESET"
+      [ -n "$IP_WARN" ] && printf '              %s! Actual IP differs from documented IP (CDN/Proxy in use)%s\n' "$C_DIM" "$C_RESET"
+      log_tech "PROBE RESULT: ATTENTION for $RESOURCE_LABEL"
+    else
+      printf '  %s[OK]%s        %-26s %s (HTTP %s, %s, IP: %s)\n' \
+        "$C_GREEN" "$C_RESET" "$RESOURCE_LABEL" "$RESOURCE_HOST" "$HTTP_CODE" "$ELAPSED_MS" "$IP_INFO"
+      log_tech "PROBE RESULT: OK for $RESOURCE_LABEL"
     fi
-    printf '  [OK] The resource is reachable and returned an application-level HTTP response.\n'
-    OK_COUNT=$((OK_COUNT + 1))
   else
-    case "$HTTP_CODE" in
-      5??) printf '  [NOT OK] The resource returned HTTP %s.\n' "$HTTP_CODE" ;;
-      *) printf '  [NOT OK] No application-level HTTP response was received after %s attempts (client exit code %s).\n' "$ATTEMPT" "$CLIENT_RC" ;;
-    esac
+    HTTP_FAIL=$((HTTP_FAIL + 1))
+    printf '  %s[NOT OK]%s    %-26s %s (HTTP %s, %s)\n' \
+      "$C_RED" "$C_RESET" "$RESOURCE_LABEL" "$RESOURCE_HOST" "${HTTP_CODE:-0}" "$IP_INFO"
+    
+    ERR_MSG=""
     if [ -s "$ERROR_FILE" ]; then
-      printf '  Error: '
-      tail -n 2 "$ERROR_FILE" | tr '\n' ' '
-      printf '\n'
+      ERR_MSG="$(tail -n 1 "$ERROR_FILE" | tr '\r\n' ' ')"
     elif [ -s "$HEADER_FILE" ]; then
-      printf '  Error: '
-      tail -n 2 "$HEADER_FILE" | tr '\n' ' '
-      printf '\n'
+      ERR_MSG="$(head -n 1 "$HEADER_FILE" | tr '\r\n' ' ')"
     fi
-    FAIL_COUNT=$((FAIL_COUNT + 1))
+    [ -n "$ERR_MSG" ] && printf '              %s! Error: %s%s\n' "$C_RED" "$ERR_MSG" "$C_RESET"
+    log_tech "PROBE RESULT: FAIL for $RESOURCE_LABEL (HTTP $HTTP_CODE, client_rc $CLIENT_RC)"
   fi
 }
 
 check_gate_tcp() {
   _HOST="$1"; _PORT="$2"
   if command -v nc >/dev/null 2>&1; then
-    if nc -w 5 "$_HOST" "$_PORT" </dev/null >/dev/null 2>&1; then return 0; fi
+    nc -w "$GATE_TIMEOUT" -z "$_HOST" "$_PORT" 2>/dev/null && return 0
   fi
   if command -v curl >/dev/null 2>&1; then
-    curl --connect-timeout 5 --max-time 6 --silent --show-error "http://$_HOST:$_PORT/" </dev/null >/dev/null 2>&1
-    _RC=$?; case "$_RC" in 0|52|56) return 0 ;; esac
+    curl --connect-timeout "$GATE_TIMEOUT" --max-time "$GATE_TIMEOUT" \
+      --silent --show-error "http://$_HOST:$_PORT/" >/dev/null 2>&1
+    _RC=$?
+    case "$_RC" in 0|52|56) return 0 ;; esac
   fi
   return 1
 }
 
 check_gate() {
-  separator
-  printf 'Cloud Gate: %s, ports 9088/9089\n' "$GATE_HOSTS"
+  printf '\n%s2. Cloud Gate TCP Connectivity (ports 9088/9089):%s\n' "$C_BOLD" "$C_RESET"
+  log_tech "CLOUD GATE CHECK: hosts=$GATE_HOSTS"
   GATE_OK=0
   GATE_TOTAL=0
   for GH in $GATE_HOSTS; do
     for PORT in 9088 9089; do
       GATE_TOTAL=$((GATE_TOTAL + 1))
-      printf '  %s:%s ... ' "$GH" "$PORT"
       if check_gate_tcp "$GH" "$PORT"; then
-        printf '[OK] TCP port accepts connections.\n'
+        printf '  %s[OK]%s        %s:%-5s (TCP port connected successfully)\n' "$C_GREEN" "$C_RESET" "$GH" "$PORT"
         GATE_OK=$((GATE_OK + 1))
+        log_tech "  Gate TCP $GH:$PORT: OK"
       else
-        printf '[ATTENTION] TCP port did not accept a connection within 5 s.\n'
+        printf '  %s[ATTENTION]%s %s:%-5s (connection timeout after %ss)\n' "$C_YELLOW" "$C_RESET" "$GH" "$PORT" "$GATE_TIMEOUT"
         WARN_COUNT=$((WARN_COUNT + 1))
+        log_tech "  Gate TCP $GH:$PORT: TIMEOUT"
       fi
     done
   done
+
   if [ "$GATE_OK" -eq 0 ]; then
     GATE_STATUS="not reachable (0 of $GATE_TOTAL)"
-    printf '  [NOT OK] No Cloud Gate endpoint accepted a TCP connection.\n'
+    printf '  %s[NOT OK]%s    No Cloud Gate endpoints accepted a connection\n' "$C_RED" "$C_RESET"
     GATE_FAILED=1
+    log_tech "GATE RESULT: FAIL (0/$GATE_TOTAL reachable)"
   else
     GATE_STATUS="reachable ($GATE_OK of $GATE_TOTAL)"
-    printf '  [OK] Cloud Gate is reachable through %s of %s tested endpoints.\n' "$GATE_OK" "$GATE_TOTAL"
+    GATE_FAILED=0
+    log_tech "GATE RESULT: OK ($GATE_OK/$GATE_TOTAL reachable)"
   fi
 }
 
 run_quality_latency() {
   _URL="$1"
   _LABEL="$2"
-  printf '1. Latency & Packet Loss test (10 probes to %s):\n' "$_LABEL"
+  printf '  • Latency & Loss (%s):\n' "$_LABEL"
+  log_tech "QUALITY LATENCY: target=$_URL label=$_LABEL"
   _SUCCESS=0
   _TOTAL=10
   _SUM_MS=0
@@ -312,7 +340,6 @@ run_quality_latency() {
   _DNS_SUM_MS=0
 
   i=1
-  printf '  Probing: '
   while [ "$i" -le "$_TOTAL" ]; do
     if command -v curl >/dev/null 2>&1; then
       _OUT="$(curl --insecure --silent --output /dev/null --connect-timeout 5 --max-time 8 \
@@ -325,6 +352,7 @@ run_quality_latency() {
       _MS="$(awk -v t="${_TIME_S:-0}" 'BEGIN { printf "%d", (t * 1000) }' 2>/dev/null || echo 0)"
       _DNS_MS="$(awk -v t="${_DNS_S:-0}" 'BEGIN { printf "%d", (t * 1000) }' 2>/dev/null || echo 0)"
 
+      log_tech "    Probe $i/$_TOTAL: code=$_CODE time=${_MS}ms dns=${_DNS_MS}ms"
       case "$_CODE" in
         2??|3??|4??)
           _SUCCESS=$((_SUCCESS + 1))
@@ -332,48 +360,34 @@ run_quality_latency() {
           _DNS_SUM_MS=$((_DNS_SUM_MS + _DNS_MS))
           [ "$_MS" -lt "$_MIN_MS" ] && _MIN_MS="$_MS"
           [ "$_MS" -gt "$_MAX_MS" ] && _MAX_MS="$_MS"
-          printf '.'
-          ;;
-        *)
-          printf 'x'
           ;;
       esac
-    else
-      if wget -q -O /dev/null --no-check-certificate --timeout=5 -t 1 "$_URL" 2>/dev/null; then
-        _SUCCESS=$((_SUCCESS + 1))
-        printf '.'
-      else
-        printf 'x'
-      fi
     fi
     i=$((i + 1))
   done
-  printf '\n'
 
   _LOSS=$(( ((_TOTAL - _SUCCESS) * 100) / _TOTAL ))
   if [ "$_SUCCESS" -gt 0 ]; then
     _AVG_MS=$((_SUM_MS / _SUCCESS))
     _AVG_DNS_MS=$((_DNS_SUM_MS / _SUCCESS))
     [ "$_MIN_MS" -eq 999999 ] && _MIN_MS=0
-    printf '  Requests succeeded: %s of %s (%s%% loss)\n' "$_SUCCESS" "$_TOTAL" "$_LOSS"
-    printf '  Latency (RTT):      min %sms | avg %sms | max %sms\n' "$_MIN_MS" "$_AVG_MS" "$_MAX_MS"
-    [ "$_AVG_DNS_MS" -gt 0 ] && printf '  DNS lookup time:    avg %sms\n' "$_AVG_DNS_MS"
-  else
-    printf '  Requests succeeded: 0 of %s (100%% loss)\n' "$_TOTAL"
-  fi
-
-  if [ "$_LOSS" -eq 0 ]; then
-    if [ "$_SUCCESS" -gt 0 ] && [ "$_AVG_MS" -gt 1000 ]; then
-      printf '  [ATTENTION] All requests succeeded, but average latency is high (> 1000 ms).\n'
+    
+    if [ "$_LOSS" -eq 0 ]; then
+      if [ "$_AVG_MS" -gt 1000 ]; then
+        printf '    %s[ATTENTION]%s 0%% loss | min %sms, avg %sms, max %sms (high average latency)\n' "$C_YELLOW" "$C_RESET" "$_MIN_MS" "$_AVG_MS" "$_MAX_MS"
+        WARN_COUNT=$((WARN_COUNT + 1))
+      else
+        printf '    %s[OK]%s        0%% loss (10/10) | min %sms, avg %sms, max %sms\n' "$C_GREEN" "$C_RESET" "$_MIN_MS" "$_AVG_MS" "$_MAX_MS"
+      fi
+    elif [ "$_LOSS" -le 20 ]; then
+      printf '    %s[ATTENTION]%s %s%% packet loss (%s/%s) | min %sms, avg %sms, max %sms\n' "$C_YELLOW" "$C_RESET" "$_LOSS" "$_SUCCESS" "$_TOTAL" "$_MIN_MS" "$_AVG_MS" "$_MAX_MS"
       WARN_COUNT=$((WARN_COUNT + 1))
     else
-      printf '  [OK] Connection latency is stable with 0%% packet loss.\n'
+      printf '    %s[NOT OK]%s    %s%% packet loss (%s/%s) | connection unstable\n' "$C_RED" "$C_RESET" "$_LOSS" "$_SUCCESS" "$_TOTAL"
+      WARN_COUNT=$((WARN_COUNT + 1))
     fi
-  elif [ "$_LOSS" -le 20 ]; then
-    printf '  [ATTENTION] Minor packet/request loss detected (%s%%). Connection may experience intermittent drops.\n' "$_LOSS"
-    WARN_COUNT=$((WARN_COUNT + 1))
   else
-    printf '  [NOT OK] High packet/request loss detected (%s%%). Connection is unstable.\n' "$_LOSS"
+    printf '    %s[NOT OK]%s    100%% packet loss (0/%s probes succeeded)\n' "$C_RED" "$C_RESET" "$_TOTAL"
     WARN_COUNT=$((WARN_COUNT + 1))
   fi
 }
@@ -381,7 +395,8 @@ run_quality_latency() {
 run_quality_throughput() {
   _URL="$1"
   _LABEL="$2"
-  printf '2. Bandwidth & Download Throughput (%s):\n' "$_LABEL"
+  printf '  • Download Throughput (%s):\n' "$_LABEL"
+  log_tech "QUALITY THROUGHPUT: target=$_URL"
   if command -v curl >/dev/null 2>&1; then
     _OUT="$(curl --insecure --location --silent --output /dev/null --connect-timeout 6 --max-time 15 \
       --user-agent "$USER_AGENT" \
@@ -395,33 +410,34 @@ run_quality_throughput() {
     _KB_PER_SEC=$(( _BYTES_PER_SEC / 1024 ))
     _DOWNLOADED_KB=$(( ${_SIZE:-0} / 1024 ))
 
+    log_tech "    Throughput result: ${_KB_PER_SEC} KB/s, transferred ${_DOWNLOADED_KB} KB in ${_TIME}s"
+
     if [ "$_BYTES_PER_SEC" -gt 0 ]; then
       if [ "$_KB_PER_SEC" -ge 1024 ]; then
         _MB_FMT="$(awk -v k="$_KB_PER_SEC" 'BEGIN { printf "%.2f MB/s", (k / 1024) }' 2>/dev/null || echo "${_KB_PER_SEC} KB/s")"
-        printf '  Download speed:     %s (%s KB transferred in %ss)\n' "$_MB_FMT" "$_DOWNLOADED_KB" "${_TIME:-n/a}"
+        _SPEED_STR="$_MB_FMT"
       else
-        printf '  Download speed:     %s KB/s (%s KB transferred in %ss)\n' "$_KB_PER_SEC" "$_DOWNLOADED_KB" "${_TIME:-n/a}"
+        _SPEED_STR="${_KB_PER_SEC} KB/s"
       fi
+
       if [ "$_KB_PER_SEC" -lt 128 ]; then
-        printf '  [ATTENTION] Download speed is low (< 128 KB/s). Large project uploads or downloads may be slow.\n'
+        printf '    %s[ATTENTION]%s %s (%s KB in %ss) — low speed for large projects\n' "$C_YELLOW" "$C_RESET" "$_SPEED_STR" "$_DOWNLOADED_KB" "${_TIME:-n/a}"
         WARN_COUNT=$((WARN_COUNT + 1))
       else
-        printf '  [OK] Download throughput is sufficient for project transfers and asset syncing.\n'
+        printf '    %s[OK]%s        %s (%s KB in %ss)\n' "$C_GREEN" "$C_RESET" "$_SPEED_STR" "$_DOWNLOADED_KB" "${_TIME:-n/a}"
       fi
     else
-      printf '  [INFO] Throughput benchmark returned 0 bytes (endpoint may be redirecting or protected).\n'
+      printf '    %s[INFO]%s      Throughput test skipped or endpoint redirected\n' "$C_GRAY" "$C_RESET"
     fi
-  else
-    printf '  [INFO] curl is not available; throughput benchmark skipped.\n'
   fi
 }
 
 run_quality_gate() {
   _HOSTS="$1"
-  printf '3. Cloud Gate Connection Stability (burst connect & timing):\n'
+  printf '  • Gate Burst Stability:\n'
+  log_tech "QUALITY GATE BURST: hosts=$_HOSTS"
   for _GH in $_HOSTS; do
     for _PORT in 9088 9089; do
-      printf '  Testing %s:%s (3 attempts) ... ' "$_GH" "$_PORT"
       _G_OK=0
       _G_TIME_SUM=0
       for _TRY in 1 2 3; do
@@ -443,18 +459,16 @@ run_quality_gate() {
           fi
         fi
       done
+      log_tech "    Gate $_GH:$_PORT: $_G_OK/3 connected"
       if [ "$_G_OK" -eq 3 ]; then
-        if [ "$_G_TIME_SUM" -gt 0 ]; then
-          _G_AVG=$((_G_TIME_SUM / 3))
-          printf '[OK] 3/3 connected (avg handshake: %sms)\n' "$_G_AVG"
-        else
-          printf '[OK] 3/3 connected successfully\n'
-        fi
+        _G_AVG=$((_G_TIME_SUM / 3))
+        [ "$_G_AVG" -gt 0 ] && _AVG_STR=" (avg handshake: ${_G_AVG}ms)" || _AVG_STR=""
+        printf '    %s[OK]%s        %s:%-5s 3/3 connections%s\n' "$C_GREEN" "$C_RESET" "$_GH" "$_PORT" "$_AVG_STR"
       elif [ "$_G_OK" -gt 0 ]; then
-        printf '[ATTENTION] %s of 3 connected (intermittent TCP resets or packet loss)\n' "$_G_OK"
+        printf '    %s[ATTENTION]%s %s:%-5s %s/3 connections (intermittent resets)\n' "$C_YELLOW" "$C_RESET" "$_GH" "$_PORT" "$_G_OK"
         WARN_COUNT=$((WARN_COUNT + 1))
       else
-        printf '[NOT OK] 0 of 3 connected\n'
+        printf '    %s[NOT OK]%s    %s:%-5s 0/3 connections failed\n' "$C_RED" "$C_RESET" "$_GH" "$_PORT"
         WARN_COUNT=$((WARN_COUNT + 1))
       fi
     done
@@ -463,14 +477,15 @@ run_quality_gate() {
 
 run_quality_mtu() {
   _TARGET_HOST="$1"
-  printf '4. Path MTU & Packet Size test (target: %s):\n' "$_TARGET_HOST"
+  printf '  • Path MTU & Packet Fragmentation:\n'
+  log_tech "QUALITY MTU: host=$_TARGET_HOST"
   if ! command -v ping >/dev/null 2>&1; then
-    printf '  [INFO] ping utility not available; MTU test skipped.\n'
+    printf '    %s[INFO]%s      ping utility not available; MTU test skipped\n' "$C_GRAY" "$C_RESET"
     return 0
   fi
 
   if ! ping -c 1 -W 2 "$_TARGET_HOST" >/dev/null 2>&1 && ! ping -c 1 "$_TARGET_HOST" >/dev/null 2>&1; then
-    printf '  [INFO] ICMP ping is filtered or unacknowledged by target host; MTU test skipped.\n'
+    printf '    %s[INFO]%s      ICMP ping filtered; MTU test skipped\n' "$C_GRAY" "$C_RESET"
     return 0
   fi
 
@@ -482,7 +497,8 @@ run_quality_mtu() {
   fi
 
   if [ "$_MTU_1500" -eq 1 ]; then
-    printf '  [OK] Standard 1500-byte MTU packets pass without fragmentation drops.\n'
+    printf '    %s[OK]%s        Standard 1500-byte MTU supported without fragmentation\n' "$C_GREEN" "$C_RESET"
+    log_tech "    MTU 1500: OK"
   else
     _MTU_1400=0
     if ping -c 2 -W 2 -M do -s 1372 "$_TARGET_HOST" >/dev/null 2>&1; then
@@ -492,77 +508,65 @@ run_quality_mtu() {
     fi
 
     if [ "$_MTU_1400" -eq 1 ]; then
-      printf '  [ATTENTION] 1500-byte packets were dropped, but 1400-byte packets passed (possible VPN/PPPoE MSS clamping issue).\n'
+      printf '    %s[ATTENTION]%s 1500-byte dropped, 1400-byte passed (MSS clamping/VPN active)\n' "$C_YELLOW" "$C_RESET"
       WARN_COUNT=$((WARN_COUNT + 1))
+      log_tech "    MTU 1500: FAILED, MTU 1400: OK"
     else
-      printf '  [ATTENTION] Large ICMP packets were dropped (network may restrict packet size or disallow large frames).\n'
+      printf '    %s[ATTENTION]%s Large ICMP frames dropped (network restricted)\n' "$C_YELLOW" "$C_RESET"
       WARN_COUNT=$((WARN_COUNT + 1))
+      log_tech "    MTU Large: FAILED"
     fi
   fi
 }
 
-printf 'iRidi Cloud Check - %s\n' "$REGION"
-printf 'Tool version: %s\n' "$TOOL_VERSION"
-if [ "$QUALITY_MODE" -eq 1 ]; then
-  printf 'Mode: Extended quality, latency, MTU, and stability analysis\n'
-else
-  printf 'Mode: Standard reachability pre-flight (run with --quality for extended tests)\n'
-fi
-printf 'Started: %s\n' "$(date 2>/dev/null || echo unknown)"
-printf 'Log file: %s\n' "${IRIDI_CLOUD_LOG_FILE:-not set}"
-printf 'Device: %s | %s | %s\n' "$(hostname 2>/dev/null || echo unknown)" "$(uname -s 2>/dev/null)" "$(uname -m 2>/dev/null)"
-printf 'Method: DNS + real HTTP(S) GET + response and payload analysis\n'
-printf 'Note: TLS certificate validation is intentionally bypassed for reachability diagnostics.\n'
+printf '%s1. Cloud HTTP/HTTPS Services:%s\n' "$C_BOLD" "$C_RESET"
 
-probe_resource www "Website and downloads" "https://www.iridi.com/" "89.169.183.139" yes
+probe_resource www "Website & Downloads" "https://www.iridi.com/" "89.169.183.139" yes
 probe_resource auth-ru "Authorization RU" "https://auth.ru.iridi.com/" "84.201.152.245" yes
-probe_resource endpoint "Cloud endpoint" "https://endpoint.iridi.com/" "95.181.182.182" yes
-probe_resource bus77-lite "Bus77 Lite cloud" "https://bus77lite.ru.iridi.com/" "84.201.152.245" yes
-probe_resource iphub-lite "IP-Hub Lite cloud" "https://iphub.ru.iridi.com/" "51.250.30.171" yes
-probe_resource commercial "Commercial offers API" "https://api.commercial-offer.iridi.com/" "213.219.212.191" yes
-probe_resource voice-cws "Voice assistants (CWS)" "https://cws.iridi.com:7972/" "185.32.84.60" no
+probe_resource endpoint "Cloud Endpoint" "https://endpoint.iridi.com/" "95.181.182.182" yes
+probe_resource bus77-lite "Bus77 Lite Cloud" "https://bus77lite.ru.iridi.com/" "84.201.152.245" yes
+probe_resource iphub-lite "IP-Hub Lite Cloud" "https://iphub.ru.iridi.com/" "51.250.30.171" yes
+probe_resource commercial "Commercial Offers API" "https://api.commercial-offer.iridi.com/" "213.219.212.191" yes
+probe_resource voice-cws "Voice Assistants (CWS)" "https://cws.iridi.com:7972/" "185.32.84.60" no
+
 check_gate
 
 if [ "$QUALITY_MODE" -eq 1 ]; then
-  separator
-  printf 'EXTENDED QUALITY & STABILITY ANALYSIS\n'
+  printf '\n%s3. Extended Channel Quality & Stability Analysis:%s\n' "$C_BOLD" "$C_RESET"
   run_quality_latency "$QUALITY_LATENCY_URL" "$QUALITY_LATENCY_LABEL"
   run_quality_throughput "$QUALITY_THROUGHPUT_URL" "$QUALITY_THROUGHPUT_LABEL"
   run_quality_gate "$GATE_HOSTS"
   run_quality_mtu "$QUALITY_MTU_HOST"
 fi
 
-separator
-printf 'SUMMARY\n'
-printf '  Profile: %s\n' "$REGION"
-printf '  Mode: %s\n' "$( [ "$QUALITY_MODE" -eq 1 ] && echo "extended quality & stability" || echo "standard reachability" )"
-printf '  HTTP resources: %s of %s available, %s failed\n' "$OK_COUNT" "$TOTAL" "$FAIL_COUNT"
-printf '  Cloud Gate: %s\n' "$GATE_STATUS"
-printf '  Warnings: %s\n' "$WARN_COUNT"
-if [ "$FAIL_COUNT" -gt 0 ] || [ "$GATE_FAILED" -eq 1 ]; then
-  printf '  Conclusion: one or more required cloud resources are unavailable.\n'
-elif [ "$WARN_COUNT" -gt 0 ]; then
-  printf '  Conclusion: required HTTP resources are available, but some items require attention.\n'
-else
-  printf '  Conclusion: required cloud resources are available with no warnings.\n'
-fi
+# Summary
+printf '\n%s================================================================%s\n' "$C_CYAN" "$C_RESET"
+printf '  %sDIAGNOSTIC SUMMARY%s\n' "$C_BOLD" "$C_RESET"
+printf '%s================================================================%s\n' "$C_CYAN" "$C_RESET"
+printf 'HTTP Services: %s of %s available (%s failed)\n' "$HTTP_OK" "$HTTP_TOTAL" "$HTTP_FAIL"
+printf 'Cloud Gate:    %s\n' "$GATE_STATUS"
+printf 'Warnings:      %s\n' "$WARN_COUNT"
 
-separator
-printf 'SUMMARY %s: checked %s, available %s, failed %s, warnings %s\n' "$REGION" "$TOTAL" "$OK_COUNT" "$FAIL_COUNT" "$WARN_COUNT"
-if [ "$FAIL_COUNT" -gt 0 ]; then
-  printf 'RESULT: FAIL - NOT OK: one or more required cloud HTTP resources are unavailable.\n'
+log_tech "SUMMARY: total=$HTTP_TOTAL ok=$HTTP_OK fail=$HTTP_FAIL warn=$WARN_COUNT gate_status=$GATE_STATUS"
+
+if [ "$HTTP_FAIL" -gt 0 ] || [ "${GATE_FAILED:-0}" -eq 1 ]; then
+  printf '\n%sRESULT: FAIL — One or more critical cloud resources are unavailable.%s\n' "$C_RED" "$C_RESET"
+  printf 'Detailed technical log: %s\n\n' "$LOG_FILE"
+  log_tech "RESULT: FAIL"
   exit 2
 fi
-if [ "$GATE_FAILED" -eq 1 ]; then
-  printf 'RESULT: WARN - ATTENTION REQUIRED: HTTP resources are available, but Cloud Gate is not reachable.\n'
-  exit 1
-fi
+
 if [ "$WARN_COUNT" -gt 0 ]; then
-  printf 'RESULT: WARN - ATTENTION REQUIRED: HTTP resources are available, but warnings were found.\n'
+  printf '\n%sRESULT: WARN — Cloud services are reachable, but warnings were detected.%s\n' "$C_YELLOW" "$C_RESET"
+  printf 'Detailed technical log: %s\n\n' "$LOG_FILE"
+  log_tech "RESULT: WARN"
   exit 1
 fi
-printf 'RESULT: PASS - OK: required cloud resources are available.\n'
+
+printf '\n%sRESULT: PASS — All required cloud resources and Cloud Gate are reachable.%s\n' "$C_GREEN" "$C_RESET"
 if [ "$QUALITY_MODE" -eq 0 ]; then
-  printf '\nTip: For deeper channel quality, latency, MTU, and throughput tests, re-run with: sh %s --quality\n' "$0"
+  printf 'Tip: For deeper channel quality and latency benchmarks, run: %ssh %s --quality%s\n' "$C_DIM" "$0" "$C_RESET"
 fi
+printf 'Detailed technical log: %s\n\n' "$LOG_FILE"
+log_tech "RESULT: PASS"
 exit 0

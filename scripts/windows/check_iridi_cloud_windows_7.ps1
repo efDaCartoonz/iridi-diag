@@ -13,35 +13,25 @@ param(
     [switch]$Quality
 )
 
-function Write-Status {
-    param(
-        [ValidateSet("OK", "ATTENTION", "NOT OK")]
-        [string]$Level,
-        [string]$Message
-    )
-
-    $line = "[{0}] {1}" -f $Level, $Message
-    switch ($Level) {
-        "OK" { Write-Host $line -ForegroundColor Green }
-        "ATTENTION" { Write-Host $line -ForegroundColor Yellow }
-        "NOT OK" { Write-Host $line -ForegroundColor Red }
-    }
-}
+$ToolVersion = "1.5"
 
 if (-not $Product) {
     while (-not $Product) {
         Clear-Host
-        Write-Host "iRidi Cloud Diagnostics"
-        Write-Host "======================="
-        Write-Host "1. i3 KNX"
-        Write-Host "2. Bus77 Home"
-        Write-Host "3. Bus77 Lite"
-        Write-Host "4. iRidi Pro - RU region"
-        Write-Host "5. iRidi Pro - EU region"
-        Write-Host "6. iRidi Pro - CN region"
-        Write-Host "0. Exit"
+        Write-Host "================================================================" -ForegroundColor Cyan
+        Write-Host "         iRidi Cloud Diagnostics (Windows 7 / Legacy)" -ForegroundColor Cyan
+        Write-Host "================================================================" -ForegroundColor Cyan
         Write-Host ""
-        $selection = Read-Host "Select product (0-6)"
+        Write-Host "Select product to diagnose:"
+        Write-Host "  1. i3 KNX"
+        Write-Host "  2. Bus77 Home"
+        Write-Host "  3. Bus77 Lite"
+        Write-Host "  4. iRidi Pro - RU region"
+        Write-Host "  5. iRidi Pro - EU region"
+        Write-Host "  6. iRidi Pro - CN region"
+        Write-Host "  0. Exit"
+        Write-Host ""
+        $selection = Read-Host "Enter choice (0-6)"
         switch ($selection) {
             "1" { $Product = "i3knx" }
             "2" { $Product = "bus77-home" }
@@ -49,15 +39,15 @@ if (-not $Product) {
             "4" { $Product = "iridi-pro"; $Region = "RU" }
             "5" { $Product = "iridi-pro"; $Region = "EU" }
             "6" { $Product = "iridi-pro"; $Region = "CN" }
-            "0" { exit 10 }
+            "0" { exit 0 }
             default {
-                Write-Host "Invalid selection. Press Enter and try again."
+                Write-Host "Invalid selection. Press Enter and try again..."
                 [void](Read-Host)
                 continue
             }
         }
         Write-Host ""
-        $qualChoice = Read-Host "Run extended quality & stability analysis (latency, loss, throughput, MTU)? (y/n)"
+        $qualChoice = Read-Host "Run extended quality & stability test (latency, loss, throughput, MTU)? [y/N]"
         if ($qualChoice -match "^[yY]") { $Quality = $true }
     }
 }
@@ -65,7 +55,7 @@ if (-not $Product) {
 $Product = $Product.ToLowerInvariant()
 $SupportedProducts = @("i3knx", "bus77-home", "bus77-lite", "iridi-pro")
 if (-not ($SupportedProducts -contains $Product)) {
-    Write-Status "NOT OK" ("Unknown product: {0}" -f $Product)
+    Write-Host ("[NOT OK] Unknown product: {0}" -f $Product) -ForegroundColor Red
     Write-Host "Allowed values: i3knx, bus77-home, bus77-lite, iridi-pro"
     exit 2
 }
@@ -77,19 +67,27 @@ if (-not $ScriptDirectory) {
 }
 $LogDirectory = Join-Path $ScriptDirectory "logs"
 if (-not (Test-Path -LiteralPath $LogDirectory)) {
-    [void](New-Item -ItemType Directory -Path $LogDirectory)
+    try {
+        [void](New-Item -ItemType Directory -Path $LogDirectory -ErrorAction Stop)
+    } catch {
+        $LogDirectory = [System.IO.Path]::GetTempPath()
+    }
 }
+
 $LogProduct = $Product.Replace("-", "_")
 if ($Product -eq "iridi-pro") {
     $LogProduct = $LogProduct + "_" + $Region.ToLowerInvariant()
 }
 $LogPath = Join-Path $LogDirectory ($LogProduct + "_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".log")
-$TranscriptStarted = $false
-try {
-    Start-Transcript -Path $LogPath | Out-Null
-    $TranscriptStarted = $true
-} catch {
-    Write-Status "ATTENTION" ("Could not start the log file: {0}" -f $_.Exception.Message)
+
+function Write-TechLog {
+    param([string]$Message)
+    $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    $logLine = "[{0}] {1}" -f $timestamp, $Message
+    try {
+        Add-Content -LiteralPath $LogPath -Value $logLine -ErrorAction SilentlyContinue
+    } catch {
+    }
 }
 
 $ErrorActionPreference = "Continue"
@@ -102,6 +100,21 @@ $HttpTotal = 0
 $HttpOk = 0
 $HttpFail = 0
 $WarningCount = 0
+
+# TLS 1.2 setup (3072 is Tls12)
+try {
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Enum]::ToObject(
+        [System.Net.SecurityProtocolType],
+        3072
+    )
+} catch {
+}
+
+# Bypass certificate validation for preflight
+try {
+    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+} catch {
+}
 
 function New-Resource {
     param(
@@ -129,13 +142,13 @@ function Add-CommonBus77Resources {
     )
 
     $items = @()
-    $items += New-Resource "www" "Website and downloads" "https://www.iridi.com/" "89.169.183.139"
+    $items += New-Resource "www" "Website & Downloads" "https://www.iridi.com/" "89.169.183.139"
     $items += New-Resource "auth-ru" "Authorization RU" "https://auth.ru.iridi.com/" "84.201.152.245"
-    $items += New-Resource "endpoint" "Cloud endpoint" "https://endpoint.iridi.com/" "95.181.182.182"
+    $items += New-Resource "endpoint" "Cloud Endpoint" "https://endpoint.iridi.com/" "95.181.182.182"
     $items += New-Resource "bus77" $ProductLabel ("https://" + $ProductHost + "/") "84.201.152.245"
     $items += New-Resource "iphub" $IpHubLabel ("https://" + $IpHubHost + "/") $IpHubIp
-    $items += New-Resource "commercial" "Commercial offers API" "https://api.commercial-offer.iridi.com/" "213.219.212.191"
-    $items += New-Resource "voice-cws" "Voice assistants (CWS)" "https://cws.iridi.com:7972/" "185.32.84.60"
+    $items += New-Resource "commercial" "Commercial Offers API" "https://api.commercial-offer.iridi.com/" "213.219.212.191"
+    $items += New-Resource "voice-cws" "Voice Assistants (CWS)" "https://cws.iridi.com:7972/" "185.32.84.60"
     return $items
 }
 
@@ -152,16 +165,16 @@ switch ($Product) {
         $QualityThroughputUrl = "https://www.iridi.com/"
         $QualityThroughputLabel = "iRidi portal (www.iridi.com)"
         $QualityMtuHost = "auth.eu.iridi.com"
-        $Resources += New-Resource "www" "Website and downloads" "https://www.iridi.com/" "89.169.183.139"
+        $Resources += New-Resource "www" "Website & Downloads" "https://www.iridi.com/" "89.169.183.139"
         $Resources += New-Resource "auth-eu" "Authorization EU" "https://auth.eu.iridi.com/" "95.216.162.71"
-        $Resources += New-Resource "proxy-auth-eu" "Authorization proxy EU" "https://proxy.auth.eu.iridi.com/" "72.56.78.171"
-        $Resources += New-Resource "proxy-auth-cloud" "Authorization proxy Cloud" "https://proxy.auth.eu.iridi.cloud/" "94.131.83.102"
-        $Resources += New-Resource "i3knx-eu" "i3 KNX cloud EU" "https://i3knx.eu.iridi.com/" "95.216.162.71"
-        $Resources += New-Resource "proxy-i3knx-eu" "i3 KNX proxy EU" "https://proxy.i3knx.eu.iridi.com/" "147.45.238.146"
-        $Resources += New-Resource "proxy-knx-cloud" "KNX proxy Cloud" "https://proxy.knx.eu.iridi.cloud/" "94.131.87.121"
-        $Resources += New-Resource "proxy-s3-eu" "Storage proxy EU" "https://proxy.s3.eu.iridi.com/" "72.56.68.146"
-        $Resources += New-Resource "ping" "Control endpoint" "https://ping.iridiummobile.net/" "52.222.136.36"
-        $Resources += New-Resource "s3-eu" "Project storage EU" "https://s3.eu.iridi.com/" "95.217.164.135"
+        $Resources += New-Resource "proxy-auth-eu" "Auth Proxy EU" "https://proxy.auth.eu.iridi.com/" "72.56.78.171"
+        $Resources += New-Resource "proxy-auth-cloud" "Auth Proxy Cloud" "https://proxy.auth.eu.iridi.cloud/" "94.131.83.102"
+        $Resources += New-Resource "i3knx-eu" "i3 KNX Cloud EU" "https://i3knx.eu.iridi.com/" "95.216.162.71"
+        $Resources += New-Resource "proxy-i3knx-eu" "i3 KNX Proxy EU" "https://proxy.i3knx.eu.iridi.com/" "147.45.238.146"
+        $Resources += New-Resource "proxy-knx-cloud" "KNX Proxy Cloud" "https://proxy.knx.eu.iridi.cloud/" "94.131.87.121"
+        $Resources += New-Resource "proxy-s3-eu" "Storage Proxy EU" "https://proxy.s3.eu.iridi.com/" "72.56.68.146"
+        $Resources += New-Resource "ping" "Control Endpoint" "https://ping.iridiummobile.net/" "52.222.136.36"
+        $Resources += New-Resource "s3-eu" "Project Storage EU" "https://s3.eu.iridi.com/" "95.217.164.135"
     }
     "bus77-home" {
         $ProductLabel = "Bus77 Home"
@@ -173,9 +186,9 @@ switch ($Product) {
         $QualityMtuHost = "auth.ru.iridi.com"
         $Resources = Add-CommonBus77Resources `
             "bus77home.ru.iridi.com" `
-            "Bus77 Home cloud" `
+            "Bus77 Home Cloud" `
             "iphubhome.ru.iridi.com" `
-            "IP-Hub Home cloud" `
+            "IP-Hub Home Cloud" `
             "37.139.42.137"
     }
     "bus77-lite" {
@@ -188,60 +201,71 @@ switch ($Product) {
         $QualityMtuHost = "auth.ru.iridi.com"
         $Resources = Add-CommonBus77Resources `
             "bus77lite.ru.iridi.com" `
-            "Bus77 Lite cloud" `
+            "Bus77 Lite Cloud" `
             "iphub.ru.iridi.com" `
-            "IP-Hub Lite cloud" `
+            "IP-Hub Lite Cloud" `
             "51.250.30.171"
     }
     "iridi-pro" {
-        $Region = $Region.ToUpperInvariant()
         $ProductLabel = "iRidi Pro " + $Region
         if ($Region -eq "EU") {
             $GateHosts = @("37.27.5.98")
             $QualityLatencyUrl = "https://auth.eu.iridi.com/"
             $QualityLatencyLabel = "Authorization EU"
             $QualityThroughputUrl = "http://iridi.com/"
-            $QualityThroughputLabel = "Update website (iridi.com)"
+            $QualityThroughputLabel = "Update service (iridi.com)"
             $QualityMtuHost = "auth.eu.iridi.com"
             $Resources += New-Resource "auth-eu" "Authorization EU" "https://auth.eu.iridi.com/" "95.216.162.71"
-            $Resources += New-Resource "i3pro-eu" "i3 Pro cloud EU" "https://i3pro.eu.iridi.com/" "95.216.162.71"
-            $Resources += New-Resource "storage-eu" "AWS storage EU" "https://s3.us-east-1.amazonaws.com/" "dynamic"
-            $Resources += New-Resource "projects-eu" "i3 Pro projects EU" "https://iridium-cloud-files.s3.amazonaws.com/" "dynamic"
-            $Resources += New-Resource "updates-site" "Update website" "http://iridi.com/" "89.169.183.139"
-            $Resources += New-Resource "updates-s3" "Update files" "http://iridium3download.s3.amazonaws.com/" "dynamic"
+            $Resources += New-Resource "i3pro-eu" "i3 Pro Cloud EU" "https://i3pro.eu.iridi.com/" "95.216.162.71"
+            $Resources += New-Resource "storage-eu" "AWS Storage EU" "https://s3.us-east-1.amazonaws.com/" "dynamic"
+            $Resources += New-Resource "projects-eu" "i3 Pro Projects EU" "https://iridium-cloud-files.s3.amazonaws.com/" "dynamic"
+            $Resources += New-Resource "updates-site" "Update Service" "http://iridi.com/" "89.169.183.139"
+            $Resources += New-Resource "updates-s3" "Update Files (S3)" "http://iridium3download.s3.amazonaws.com/" "dynamic"
         } elseif ($Region -eq "CN") {
             $GateHosts = @("37.27.5.98")
             $QualityLatencyUrl = "https://auth.eu.iridi.com/"
             $QualityLatencyLabel = "Authorization CN (Global)"
             $QualityThroughputUrl = "http://iridi.com/"
-            $QualityThroughputLabel = "Update website (iridi.com)"
+            $QualityThroughputLabel = "Update service (iridi.com)"
             $QualityMtuHost = "auth.eu.iridi.com"
-            $Resources += New-Resource "auth-cn" "Authorization CN" "https://auth.eu.iridi.com/" "95.216.162.71"
-            $Resources += New-Resource "i3pro-cn" "i3 Pro cloud CN" "https://i3pro.eu.iridi.com/" "95.216.162.71"
-            $Resources += New-Resource "storage-cn" "Alibaba storage CN" "https://ir-endpoint.oss-cn-shanghai.aliyuncs.com/" "dynamic"
-            $Resources += New-Resource "projects-cn" "i3 Pro projects CN" "https://ir-proj-sh.oss-cn-shanghai.aliyuncs.com/" "dynamic"
-            $Resources += New-Resource "updates-site" "Update website" "http://iridi.com/" "89.169.183.139"
-            $Resources += New-Resource "updates-cn" "CN update files" "http://iridium3download.oss-cn-hangzhou.aliyuncs.com/" "dynamic"
+            $Resources += New-Resource "auth-cn" "Authorization CN (Global)" "https://auth.eu.iridi.com/" "95.216.162.71"
+            $Resources += New-Resource "i3pro-cn" "i3 Pro Cloud CN" "https://i3pro.eu.iridi.com/" "95.216.162.71"
+            $Resources += New-Resource "storage-cn" "CN Object Storage" "https://ir-endpoint.oss-cn-shanghai.aliyuncs.com/" "106.14.228.182"
+            $Resources += New-Resource "projects-cn" "i3 Pro Projects CN" "https://ir-proj-sh.oss-cn-shanghai.aliyuncs.com/" "106.14.228.182"
+            $Resources += New-Resource "updates-site" "Update Service" "http://iridi.com/" "89.169.183.139"
+            $Resources += New-Resource "updates-cn" "CN Update Files" "http://iridium3download.oss-cn-hangzhou.aliyuncs.com/" "118.178.60.104"
         } else {
             $GateHosts = @("85.192.35.27")
             $QualityLatencyUrl = "https://auth.ru.iridi.com/"
             $QualityLatencyLabel = "Authorization RU"
             $QualityThroughputUrl = "http://iridi.com/"
-            $QualityThroughputLabel = "Update website (iridi.com)"
+            $QualityThroughputLabel = "Update service (iridi.com)"
             $QualityMtuHost = "auth.ru.iridi.com"
             $Resources += New-Resource "auth-ru" "Authorization RU" "https://auth.ru.iridi.com/" "84.201.152.245"
-            $Resources += New-Resource "i3pro-ru" "i3 Pro cloud RU" "https://i3pro.ru.iridi.com/" "84.201.152.245"
-            $Resources += New-Resource "storage-ru" "Yandex storage RU" "https://storage.yandexcloud.net/" "213.180.193.243"
-            $Resources += New-Resource "projects-ru" "i3 Pro projects RU" "https://i3pro.storage.yandexcloud.net/" "213.180.193.243"
-            $Resources += New-Resource "updates-site" "Update website" "http://iridi.com/" "89.169.183.139"
-            $Resources += New-Resource "updates-s3" "Update files" "http://iridium3download.s3.amazonaws.com/" "dynamic"
+            $Resources += New-Resource "i3pro-ru" "i3 Pro Cloud RU" "https://i3pro.ru.iridi.com/" "84.201.152.245"
+            $Resources += New-Resource "storage-ru" "RU Object Storage" "https://storage.yandexcloud.net/" "213.180.193.243"
+            $Resources += New-Resource "projects-ru" "i3 Pro Projects RU" "https://i3pro.storage.yandexcloud.net/" "213.180.193.243"
+            $Resources += New-Resource "updates-site" "Update Service" "http://iridi.com/" "89.169.183.139"
+            $Resources += New-Resource "updates-s3" "Update Files (S3)" "http://iridium3download.s3.amazonaws.com/" "dynamic"
         }
     }
 }
 
-function Write-Separator {
-    Write-Host "----------------------------------------------------------------"
+Write-TechLog "================================================================================"
+Write-TechLog ("iRidi Cloud Diagnostics (Windows 7 / Legacy) - Technical Log")
+Write-TechLog ("Version: {0} | Product: {1} | Region: {2}" -f $ToolVersion, $ProductLabel, $Region)
+Write-TechLog ("Host: {0} | OS: {1}" -f $env:COMPUTERNAME, [System.Environment]::OSVersion.VersionString)
+Write-TechLog ("Log File: {0}" -f $LogPath)
+Write-TechLog "================================================================================"
+
+Write-Host "================================================================" -ForegroundColor Cyan
+Write-Host ("  iRidi Cloud Diagnostics — {0} (v{1})" -f $ProductLabel, $ToolVersion) -ForegroundColor White
+Write-Host "================================================================" -ForegroundColor Cyan
+Write-Host ("Host: {0} | OS: Windows ({1})" -f $env:COMPUTERNAME, [System.Environment]::OSVersion.Version.ToString())
+if ($Quality) {
+    Write-Host "Mode: Extended Quality & Stability Analysis" -ForegroundColor Cyan
 }
+Write-Host ""
 
 function Test-HttpResource {
     param($Resource)
@@ -259,11 +283,14 @@ function Test-HttpResource {
     if ($resolvedAddresses.Count -gt 0) {
         $dnsText = [System.String]::Join(", ", [string[]]$resolvedAddresses)
     } else {
-        $dnsText = "not resolved"
+        $dnsText = "unresolved"
     }
 
+    Write-TechLog ("PROBE START: {0} ({1})" -f $Resource.Label, $Resource.Url)
+    Write-TechLog ("  Host: {0} -> DNS: {1} (Expected: {2})" -f $uri.Host, $dnsText, $Resource.ExpectedIp)
+
     $attempt = 1
-    $responseReceived = $false
+    $response = $null
     $statusCode = 0
     $contentType = "not provided"
     $payloadBytes = 0
@@ -271,46 +298,24 @@ function Test-HttpResource {
     $elapsedSeconds = 0
 
     while ($attempt -le $MaxAttempts) {
-        $responseReceived = $false
+        $response = $null
         $lastError = ""
         $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         try {
-            # WinHTTP is built into Windows 7 and does not require a modern
-            # .NET runtime. Option 9 selects TLS 1.2 (0x0800); option 4 ignores
-            # certificate-chain errors for this reachability diagnostic.
-            $request = New-Object -ComObject "WinHttp.WinHttpRequest.5.1"
-            $request.SetTimeouts(
-                $ConnectTimeoutMilliseconds,
-                $ConnectTimeoutMilliseconds,
-                $RequestTimeoutMilliseconds,
-                $RequestTimeoutMilliseconds
-            )
-            $request.Open("GET", $Resource.Url, $false)
-            try {
-                $request.Option(9) = 2048
-            } catch {
-            }
-            try {
-                $request.Option(4) = 13056
-            } catch {
-            }
-            $request.SetRequestHeader("Accept", "application/json, text/plain, */*")
-            $request.SetRequestHeader("User-Agent", "iridi-cloud-check-windows7/1.0")
-            $request.Send()
-            $statusCode = [int]$request.Status
-            $responseReceived = $true
-            try {
-                $contentType = [string]$request.GetResponseHeader("Content-Type")
-            } catch {
-                $contentType = "not provided"
-            }
-            try {
-                $responseBody = $request.ResponseBody
-                if ($responseBody -ne $null) {
-                    $payloadBytes = $responseBody.Length
-                }
-            } catch {
-                $payloadBytes = 0
+            $request = [System.Net.HttpWebRequest]::Create($Resource.Url)
+            $request.Method = "GET"
+            $request.UserAgent = "iridi-diag/windows-$Product/$ToolVersion"
+            $request.Accept = "application/json, text/plain, */*"
+            $request.AllowAutoRedirect = $true
+            $request.MaximumAutomaticRedirections = 3
+            $request.Timeout = $RequestTimeoutMilliseconds
+            $request.ReadWriteTimeout = $RequestTimeoutMilliseconds
+            $response = $request.GetResponse()
+        } catch [System.Net.WebException] {
+            if ($_.Exception.Response -ne $null) {
+                $response = $_.Exception.Response
+            } else {
+                $lastError = $_.Exception.Message
             }
         } catch {
             $lastError = $_.Exception.Message
@@ -318,7 +323,9 @@ function Test-HttpResource {
         $stopwatch.Stop()
         $elapsedSeconds = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 3)
 
-        if ($responseReceived) {
+        Write-TechLog ("  Attempt {0}/{1}: code={2} elapsed={3}s error={4}" -f $attempt, $MaxAttempts, $statusCode, $elapsedSeconds, $lastError)
+
+        if ($response -ne $null) {
             break
         }
         if ($attempt -ge $MaxAttempts) {
@@ -328,42 +335,69 @@ function Test-HttpResource {
         $attempt = $attempt + 1
     }
 
-    Write-Separator
-    Write-Host $Resource.Label
-    Write-Host ("  URL:              {0}" -f $Resource.Url)
-    Write-Host ("  DNS:              {0} -> {1}" -f $uri.Host, $dnsText)
-    Write-Host ("  Documented IP:    {0}" -f $Resource.ExpectedIp)
-    Write-Host ("  Attempt:          {0} of {1}" -f $attempt, $MaxAttempts)
-    Write-Host ("  HTTP response:    {0}" -f $statusCode)
-    Write-Host ("  Content-Type:     {0}" -f $contentType)
-    Write-Host ("  Payload:          {0} bytes" -f $payloadBytes)
-    Write-Host ("  Request time:     {0} s" -f $elapsedSeconds)
+    if ($response -ne $null) {
+        try {
+            $statusCode = [int]$response.StatusCode
+            if ($response.ContentType) {
+                $contentType = [string]$response.ContentType
+            }
+            $stream = $response.GetResponseStream()
+            if ($stream -ne $null) {
+                $buffer = New-Object byte[] 8192
+                do {
+                    $bytesRead = $stream.Read($buffer, 0, $buffer.Length)
+                    $payloadBytes = $payloadBytes + $bytesRead
+                } while ($bytesRead -gt 0)
+                $stream.Close()
+            }
+        } catch {
+            $lastError = $_.Exception.Message
+        }
+        try {
+            $response.Close()
+        } catch {
+        }
+    }
 
+    $elapsedMs = [int]($elapsedSeconds * 1000)
+    $ipInfo = if ($resolvedAddresses.Count -gt 0) { $resolvedAddresses[0] } else { "unresolved" }
+    $ipMismatch = $false
     if (($Resource.ExpectedIp -ne "dynamic") -and ($resolvedAddresses.Count -gt 0)) {
         if (-not ($resolvedAddresses -contains $Resource.ExpectedIp)) {
-            Write-Status "ATTENTION" "DNS addresses differ from the documented IP (a CDN or proxy may be in use)."
-            $script:WarningCount = $script:WarningCount + 1
+            $ipMismatch = $true
         }
     }
 
-    if (($statusCode -ge 200) -and ($statusCode -lt 500)) {
-        if ($attempt -gt 1) {
-            Write-Status "ATTENTION" "The response was received after a retry; the connection may be unstable."
+    $isOk = ($statusCode -ge 200) -and ($statusCode -lt 500)
+    $labelPadded = $Resource.Label.PadRight(26)
+
+    if ($isOk) {
+        if ($ipMismatch -or ($attempt -gt 1)) {
             $script:WarningCount = $script:WarningCount + 1
+            Write-Host "  [ATTENTION] " -ForegroundColor Yellow -NoNewline
+            Write-Host ("{0} {1} (HTTP {2}, {3}ms, IP: {4})" -f $labelPadded, $uri.Host, $statusCode, $elapsedMs, $ipInfo)
+            if ($attempt -gt 1) {
+                Write-Host ("              ! Succeeded on retry attempt {0} of {1}" -f $attempt, $MaxAttempts) -ForegroundColor DarkGray
+            }
+            if ($ipMismatch) {
+                Write-Host ("              ! Actual IP ({0}) differs from documented ({1})" -f $ipInfo, $Resource.ExpectedIp) -ForegroundColor DarkGray
+            }
+            Write-TechLog ("PROBE RESULT: ATTENTION for {0}" -f $Resource.Label)
+        } else {
+            Write-Host "  [OK]        " -ForegroundColor Green -NoNewline
+            Write-Host ("{0} {1} (HTTP {2}, {3}ms, IP: {4})" -f $labelPadded, $uri.Host, $statusCode, $elapsedMs, $ipInfo)
+            Write-TechLog ("PROBE RESULT: OK for {0}" -f $Resource.Label)
         }
-        Write-Status "OK" "Application-level HTTP response and payload received."
         return $true
-    }
-
-    if ($statusCode -ge 500) {
-        Write-Status "NOT OK" ("The service returned HTTP {0}." -f $statusCode)
     } else {
-        Write-Status "NOT OK" ("No HTTP response after {0} attempts." -f $attempt)
+        Write-Host "  [NOT OK]    " -ForegroundColor Red -NoNewline
+        Write-Host ("{0} {1} (HTTP {2}, {3})" -f $labelPadded, $uri.Host, $statusCode, $ipInfo)
         if ($lastError) {
-            Write-Host ("  Error: {0}" -f $lastError)
+            Write-Host ("              ! Error: {0}" -f $lastError) -ForegroundColor Red
         }
+        Write-TechLog ("PROBE RESULT: FAIL for {0} (HTTP {1}, error: {2})" -f $Resource.Label, $statusCode, $lastError)
+        return $false
     }
-    return $false
 }
 
 function Test-TcpPort {
@@ -396,137 +430,154 @@ function Test-TcpPort {
 
 function Test-QualityLatency {
     param([string]$Url, [string]$Label)
-    Write-Host ("1. Latency & Packet Loss test (10 probes to {0}):" -f $Label)
-    Write-Host -NoNewline "  Probing: "
-    $success = 0
-    $total = 10
+
+    Write-Host ("  • Latency & Loss ({0}):" -f $Label)
+    Write-TechLog ("QUALITY LATENCY: target={0}" -f $Url)
+
+    $successCount = 0
+    $totalCount = 10
     $times = @()
 
-    for ($i = 1; $i -le $total; $i++) {
+    for ($i = 1; $i -le $totalCount; $i++) {
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
-            $request = [System.Net.HttpWebRequest]::Create($Url)
-            $request.Method = "GET"
-            $request.Timeout = 5000
-            $request.UserAgent = $UserAgent
-            $response = $request.GetResponse()
+            $req = [System.Net.HttpWebRequest]::Create($Url)
+            $req.Method = "GET"
+            $req.UserAgent = "iridi-diag/windows-$Product/$ToolVersion"
+            $req.Timeout = 5000
+            $resp = $req.GetResponse()
             $sw.Stop()
-            $response.Close()
+            $resp.Close()
             $times += $sw.ElapsedMilliseconds
-            $success++
-            Write-Host -NoNewline "."
-        } catch [System.Net.WebException] {
-            $sw.Stop()
-            if ($_.Response -ne $null) {
-                $times += $sw.ElapsedMilliseconds
-                $success++
-                Write-Host -NoNewline "."
-                $_.Response.Close()
-            } else {
-                Write-Host -NoNewline "x"
-            }
+            $successCount++
+            Write-TechLog ("    Probe {0}/{1}: {2}ms" -f $i, $totalCount, $sw.ElapsedMilliseconds)
         } catch {
-            Write-Host -NoNewline "x"
+            $sw.Stop()
+            Write-TechLog ("    Probe {0}/{1}: FAILED ({2})" -f $i, $totalCount, $_.Exception.Message)
         }
     }
-    Write-Host ""
 
-    $loss = [int]((($total - $success) * 100) / $total)
-    if ($success -gt 0) {
-        $measure = $times | Measure-Object -Average -Minimum -Maximum
-        Write-Host ("  Requests succeeded: {0} of {1} ({2}% loss)" -f $success, $total, $loss)
-        Write-Host ("  Latency (RTT):      min {0}ms | avg {1}ms | max {2}ms" -f $measure.Minimum, [int]$measure.Average, $measure.Maximum)
+    $loss = [int]((($totalCount - $successCount) * 100) / $totalCount)
+    if ($successCount -gt 0) {
+        $min = ($times | Measure-Object -Minimum).Minimum
+        $max = ($times | Measure-Object -Maximum).Maximum
+        $avg = [int](($times | Measure-Object -Average).Average)
+
         if ($loss -eq 0) {
-            if ($measure.Average -gt 1000) {
-                Write-Status "ATTENTION" "All requests succeeded, but average latency is high (> 1000 ms)."
-                $script:WarningCount++
+            if ($avg -gt 1000) {
+                Write-Host "    [ATTENTION] " -ForegroundColor Yellow -NoNewline
+                Write-Host ("0% loss | min {0}ms, avg {1}ms, max {2}ms (high latency)" -f $min, $avg, $max)
+                $script:WarningCount = $script:WarningCount + 1
             } else {
-                Write-Status "OK" "Connection latency is stable with 0% packet loss."
+                Write-Host "    [OK]        " -ForegroundColor Green -NoNewline
+                Write-Host ("0% loss (10/10) | min {0}ms, avg {1}ms, max {2}ms" -f $min, $avg, $max)
             }
         } elseif ($loss -le 20) {
-            Write-Status "ATTENTION" ("Minor packet/request loss detected ({0}%). Connection may experience intermittent drops." -f $loss)
-            $script:WarningCount++
+            Write-Host "    [ATTENTION] " -ForegroundColor Yellow -NoNewline
+            Write-Host ("{0}% packet loss ({1}/{2}) | min {3}ms, avg {4}ms, max {5}ms" -f $loss, $successCount, $totalCount, $min, $avg, $max)
+            $script:WarningCount = $script:WarningCount + 1
         } else {
-            Write-Status "NOT OK" ("High packet/request loss detected ({0}%). Connection is unstable." -f $loss)
-            $script:WarningCount++
+            Write-Host "    [NOT OK]    " -ForegroundColor Red -NoNewline
+            Write-Host ("{0}% packet loss ({1}/{2}) | connection unstable" -f $loss, $successCount, $totalCount)
+            $script:WarningCount = $script:WarningCount + 1
         }
     } else {
-        Write-Host ("  Requests succeeded: 0 of {0} (100% loss)" -f $total)
-        Write-Status "NOT OK" "All quality probes failed. Connection is unavailable or blocked."
-        $script:WarningCount++
+        Write-Host "    [NOT OK]    " -ForegroundColor Red -NoNewline
+        Write-Host ("100% packet loss (0/{0} probes succeeded)" -f $totalCount)
+        $script:WarningCount = $script:WarningCount + 1
     }
 }
 
 function Test-QualityThroughput {
     param([string]$Url, [string]$Label)
-    Write-Host ("2. Bandwidth & Download Throughput ({0}):" -f $Label)
+
+    Write-Host ("  • Download Throughput ({0}):" -f $Label)
+    Write-TechLog ("QUALITY THROUGHPUT: target={0}" -f $Url)
+
     try {
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $request = [System.Net.HttpWebRequest]::Create($Url)
-        $request.Method = "GET"
-        $request.Timeout = 15000
-        $request.UserAgent = $UserAgent
-        $response = $request.GetResponse()
-        $stream = $response.GetResponseStream()
+        $req = [System.Net.HttpWebRequest]::Create($Url)
+        $req.Method = "GET"
+        $req.UserAgent = "iridi-diag/windows-$Product/$ToolVersion"
+        $req.Timeout = 15000
+        $resp = $req.GetResponse()
+        $stream = $resp.GetResponseStream()
         $buffer = New-Object byte[] 65536
         $totalBytes = 0
-        $read = 0
         do {
             $read = $stream.Read($buffer, 0, $buffer.Length)
             $totalBytes += $read
         } while ($read -gt 0)
-        $sw.Stop()
         $stream.Close()
-        $response.Close()
+        $resp.Close()
+        $sw.Stop()
 
-        $elapsedSec = [Math]::Max($sw.Elapsed.TotalSeconds, 0.001)
-        $kbPerSec = [int](($totalBytes / 1024) / $elapsedSec)
-        $downloadedKb = [int]($totalBytes / 1024)
+        $seconds = $sw.Elapsed.TotalSeconds
+        if ($seconds -gt 0 -and $totalBytes -gt 0) {
+            $bytesPerSec = $totalBytes / $seconds
+            $kbPerSec = [int]($bytesPerSec / 1024)
+            $transferredKb = [int]($totalBytes / 1024)
+            $timeFmt = [Math]::Round($seconds, 2)
 
-        if ($kbPerSec -ge 1024) {
-            $speedFmt = "{0:N2} MB/s" -f ($kbPerSec / 1024)
-        } else {
-            $speedFmt = "{0} KB/s" -f $kbPerSec
-        }
-        Write-Host ("  Download speed:     {0} ({1} KB transferred in {2:N2}s)" -f $speedFmt, $downloadedKb, $elapsedSec)
-        if ($kbPerSec -lt 128) {
-            Write-Status "ATTENTION" "Download speed is low (< 128 KB/s). Large project uploads or downloads may be slow."
-            $script:WarningCount++
-        } else {
-            Write-Status "OK" "Download throughput is sufficient for project transfers and asset syncing."
+            $speedStr = ""
+            if ($kbPerSec -ge 1024) {
+                $mbVal = [Math]::Round(($kbPerSec / 1024), 2)
+                $speedStr = "{0} MB/s" -f $mbVal
+            } else {
+                $speedStr = "{0} KB/s" -f $kbPerSec
+            }
+
+            Write-TechLog ("    Throughput: {0} ({1} KB in {2}s)" -f $speedStr, $transferredKb, $timeFmt)
+
+            if ($kbPerSec -lt 128) {
+                Write-Host "    [ATTENTION] " -ForegroundColor Yellow -NoNewline
+                Write-Host ("{0} ({1} KB in {2}s) — low speed for large projects" -f $speedStr, $transferredKb, $timeFmt)
+                $script:WarningCount = $script:WarningCount + 1
+            } else {
+                Write-Host "    [OK]        " -ForegroundColor Green -NoNewline
+                Write-Host ("{0} ({1} KB in {2}s)" -f $speedStr, $transferredKb, $timeFmt)
+            }
         }
     } catch {
-        Write-Host "  [INFO] Throughput benchmark endpoint timed out or returned no data."
+        Write-Host "    [INFO]      Throughput test skipped or endpoint protected" -ForegroundColor DarkGray
+        Write-TechLog ("    Throughput failed: {0}" -f $_.Exception.Message)
     }
 }
 
-function Test-QualityGate {
-    param([string[]]$GateHostList)
-    Write-Host "3. Cloud Gate Connection Stability (burst connect & timing):"
-    foreach ($gh in $GateHostList) {
+function Test-QualityGateBurst {
+    param($Hosts)
+
+    Write-Host "  • Gate Burst Stability:"
+    Write-TechLog ("QUALITY GATE BURST: hosts={0}" -f ($Hosts -join ", "))
+
+    foreach ($gh in $Hosts) {
         foreach ($port in @(9088, 9089)) {
-            Write-Host -NoNewline ("  Testing {0}:{1} (3 attempts) ... " -f $gh, $port)
             $gOk = 0
-            $gTimes = @()
+            $times = @()
             for ($try = 1; $try -le 3; $try++) {
                 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-                if (Test-TcpPort $gh $port) {
+                if (Test-TcpPort -HostName $gh -Port $port) {
                     $sw.Stop()
                     $gOk++
-                    $gTimes += $sw.ElapsedMilliseconds
+                    $times += $sw.ElapsedMilliseconds
                 } else {
                     $sw.Stop()
                 }
             }
+
+            $endpointStr = ("{0}:{1}" -f $gh, $port).PadRight(21)
             if ($gOk -eq 3) {
-                $avgHandshake = [int]($gTimes | Measure-Object -Average).Average
-                Write-Host ("[OK] 3/3 connected (avg handshake: {0}ms)" -f $avgHandshake) -ForegroundColor Green
+                $avg = [int](($times | Measure-Object -Average).Average)
+                Write-Host "    [OK]        " -ForegroundColor Green -NoNewline
+                Write-Host ("{0} 3/3 connections (avg handshake: {1}ms)" -f $endpointStr, $avg)
             } elseif ($gOk -gt 0) {
-                Write-Host ("[ATTENTION] {0} of 3 connected (intermittent TCP drops)" -f $gOk) -ForegroundColor Yellow
-                $script:WarningCount++
+                Write-Host "    [ATTENTION] " -ForegroundColor Yellow -NoNewline
+                Write-Host ("{0} {1}/3 connections (intermittent resets)" -f $endpointStr, $gOk)
+                $script:WarningCount = $script:WarningCount + 1
             } else {
-                Write-Host "[NOT OK] 0 of 3 connected" -ForegroundColor Red
-                $script:WarningCount++
+                Write-Host "    [NOT OK]    " -ForegroundColor Red -NoNewline
+                Write-Host ("{0} 0/3 connections failed" -f $endpointStr)
+                $script:WarningCount = $script:WarningCount + 1
             }
         }
     }
@@ -534,107 +585,128 @@ function Test-QualityGate {
 
 function Test-QualityMtu {
     param([string]$TargetHost)
-    Write-Host ("4. Path MTU & Packet Size test (target: {0}):" -f $TargetHost)
+
+    Write-Host "  • Path MTU & Packet Fragmentation:"
+    Write-TechLog ("QUALITY MTU: host={0}" -f $TargetHost)
+
     try {
-        $p1 = Test-Connection -ComputerName $TargetHost -Count 1 -Quiet -ErrorAction SilentlyContinue
-        if (-not $p1) {
-            Write-Host "  [INFO] ICMP ping is filtered or unacknowledged by target host; MTU test skipped."
+        $pinger = New-Object System.Net.NetworkInformation.Ping
+        $options = New-Object System.Net.NetworkInformation.PingOptions
+        $options.DontFragment = $true
+        $buffer1500 = New-Object byte[] 1472
+
+        $reply = $pinger.Send($TargetHost, 3000, $buffer1500, $options)
+        if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
+            Write-Host "    [OK]        Standard 1500-byte MTU supported without fragmentation" -ForegroundColor Green
+            Write-TechLog "    MTU 1500: OK"
             return
         }
-        $p1500 = Test-Connection -ComputerName $TargetHost -Count 2 -BufferSize 1472 -DontFragment -Quiet -ErrorAction SilentlyContinue
-        if ($p1500) {
-            Write-Status "OK" "Standard 1500-byte MTU packets pass without fragmentation drops."
+
+        $buffer1400 = New-Object byte[] 1372
+        $reply2 = $pinger.Send($TargetHost, 3000, $buffer1400, $options)
+        if ($reply2.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
+            Write-Host "    [ATTENTION] 1500-byte dropped, 1400-byte passed (MSS clamping/VPN active)" -ForegroundColor Yellow
+            $script:WarningCount = $script:WarningCount + 1
+            Write-TechLog "    MTU 1500: FAILED, MTU 1400: OK"
         } else {
-            $p1400 = Test-Connection -ComputerName $TargetHost -Count 2 -BufferSize 1372 -DontFragment -Quiet -ErrorAction SilentlyContinue
-            if ($p1400) {
-                Write-Status "ATTENTION" "1500-byte packets were dropped, but 1400-byte packets passed (possible VPN/PPPoE MSS clamping issue)."
-                $script:WarningCount++
-            } else {
-                Write-Status "ATTENTION" "Large ICMP packets were dropped (network may restrict packet size or disallow large frames)."
-                $script:WarningCount++
-            }
+            Write-Host "    [ATTENTION] Large ICMP frames dropped (network restricted)" -ForegroundColor Yellow
+            $script:WarningCount = $script:WarningCount + 1
+            Write-TechLog "    MTU Large: FAILED"
         }
     } catch {
-        Write-Host "  [INFO] MTU test could not be completed; skipped."
+        Write-Host "    [INFO]      Ping utility or ICMP restricted; MTU test skipped" -ForegroundColor DarkGray
+        Write-TechLog ("    MTU check error: {0}" -f $_.Exception.Message)
     }
 }
 
-Write-Host ("iRidi Cloud Check - {0}" -f $ProductLabel)
-Write-Host ("Target: Windows 7 / Windows PowerShell 2.0+")
-if ($Quality) {
-    Write-Host "Mode: Extended quality, latency, MTU, and stability analysis"
-} else {
-    Write-Host "Mode: Standard reachability pre-flight (run with -Quality for extended tests)"
-}
-Write-Host ("Started: {0}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss zzz"))
-Write-Host ("Computer: {0}" -f $env:COMPUTERNAME)
-Write-Host ("Log file: {0}" -f $LogPath)
-Write-Host "Method: DNS + real HTTP(S) GET + payload read + Cloud Gate TCP connection"
+# --- 1. Cloud HTTP Services ---
+Write-Host "1. Cloud HTTP/HTTPS Services:" -ForegroundColor White
 
-foreach ($resource in $Resources) {
-    $HttpTotal = $HttpTotal + 1
-    if (Test-HttpResource $resource) {
-        $HttpOk = $HttpOk + 1
+foreach ($r in $Resources) {
+    $script:HttpTotal++
+    if (Test-HttpResource -Resource $r) {
+        $script:HttpOk++
     } else {
-        $HttpFail = $HttpFail + 1
+        $script:HttpFail++
     }
 }
 
-Write-Separator
-Write-Host "Cloud Gate TCP connectivity"
-$GateTotal = 0
+# --- 2. Gate TCP ---
+Write-Host ""
+Write-Host "2. Cloud Gate TCP Connectivity (ports 9088/9089):" -ForegroundColor White
 $GateOk = 0
-foreach ($gateHost in $GateHosts) {
-    foreach ($gatePort in @(9088, 9089)) {
-        $GateTotal = $GateTotal + 1
-        if (Test-TcpPort $gateHost $gatePort) {
-            Write-Status "OK" ("{0}:{1} accepts TCP connections." -f $gateHost, $gatePort)
-            $GateOk = $GateOk + 1
+$GateTotal = 0
+
+foreach ($gh in $GateHosts) {
+    foreach ($port in @(9088, 9089)) {
+        $GateTotal++
+        $endpointStr = ("{0}:{1}" -f $gh, $port).PadRight(21)
+        if (Test-TcpPort -HostName $gh -Port $port) {
+            Write-Host "  [OK]        " -ForegroundColor Green -NoNewline
+            Write-Host ("{0} (TCP port connected successfully)" -f $endpointStr)
+            $GateOk++
+            Write-TechLog ("  Gate TCP {0}:{1}: OK" -f $gh, $port)
         } else {
-            Write-Status "ATTENTION" ("{0}:{1} did not accept a TCP connection." -f $gateHost, $gatePort)
-            $WarningCount = $WarningCount + 1
+            Write-Host "  [ATTENTION] " -ForegroundColor Yellow -NoNewline
+            Write-Host ("{0} (connection timeout after {1}s)" -f $endpointStr, ($GateTimeoutMilliseconds/1000))
+            $script:WarningCount = $script:WarningCount + 1
+            Write-TechLog ("  Gate TCP {0}:{1}: TIMEOUT" -f $gh, $port)
         }
     }
 }
 
+$GateStatus = ""
 $GateFailed = $false
 if ($GateOk -eq 0) {
+    $GateStatus = ("not reachable (0 of {0})" -f $GateTotal)
+    Write-Host "  [NOT OK]    No Cloud Gate endpoints accepted a connection" -ForegroundColor Red
     $GateFailed = $true
-    Write-Status "NOT OK" "No documented Cloud Gate endpoint accepted a TCP connection."
 } else {
-    Write-Status "OK" ("Cloud Gate is reachable through {0} of {1} tested endpoints." -f $GateOk, $GateTotal)
+    $GateStatus = ("reachable ({0} of {1})" -f $GateOk, $GateTotal)
 }
 
+# --- 3. Quality Tests ---
 if ($Quality) {
-    Write-Separator
-    Write-Host "EXTENDED QUALITY & STABILITY ANALYSIS"
-    Test-QualityLatency $QualityLatencyUrl $QualityLatencyLabel
-    Test-QualityThroughput $QualityThroughputUrl $QualityThroughputLabel
-    Test-QualityGate $GateHosts
-    Test-QualityMtu $QualityMtuHost
+    Write-Host ""
+    Write-Host "3. Extended Channel Quality & Stability Analysis:" -ForegroundColor White
+    Test-QualityLatency -Url $QualityLatencyUrl -Label $QualityLatencyLabel
+    Test-QualityThroughput -Url $QualityThroughputUrl -Label $QualityThroughputLabel
+    Test-QualityGateBurst -Hosts $GateHosts
+    Test-QualityMtu -TargetHost $QualityMtuHost
 }
 
-Write-Separator
-Write-Host ("SUMMARY {0}: HTTP checked {1}, available {2}, failed {3}, warnings {4}" -f $ProductLabel, $HttpTotal, $HttpOk, $HttpFail, $WarningCount)
-Write-Host ("Mode: {0}" -f ($(if ($Quality) { "extended quality & stability" } else { "standard reachability" })))
-if (($HttpFail -eq 0) -and (-not $GateFailed)) {
-    if ($WarningCount -gt 0) {
-        Write-Host "RESULT: WARN - ATTENTION REQUIRED: required services are reachable, but warnings were found." -ForegroundColor Yellow
-        $ExitCode = 1
-    } else {
-        Write-Host "RESULT: PASS - OK: required HTTP resources and Cloud Gate are reachable." -ForegroundColor Green
-        $ExitCode = 0
-    }
-} else {
-    Write-Host "RESULT: FAIL - NOT OK: one or more required cloud checks failed." -ForegroundColor Red
-    $ExitCode = 2
+# --- Summary ---
+Write-Host ""
+Write-Host "================================================================" -ForegroundColor Cyan
+Write-Host "  DIAGNOSTIC SUMMARY" -ForegroundColor White
+Write-Host "================================================================" -ForegroundColor Cyan
+Write-Host ("HTTP Services: {0} of {1} available ({2} failed)" -f $HttpOk, $HttpTotal, $HttpFail)
+Write-Host ("Cloud Gate:    {0}" -f $GateStatus)
+Write-Host ("Warnings:      {0}" -f $WarningCount)
+
+Write-TechLog ("SUMMARY: total={0} ok={1} fail={2} warn={3} gate_status={4}" -f $HttpTotal, $HttpOk, $HttpFail, $WarningCount, $GateStatus)
+
+if (($HttpFail -gt 0) -or $GateFailed) {
+    Write-Host ""
+    Write-Host "RESULT: FAIL — One or more critical cloud resources are unavailable." -ForegroundColor Red
+    Write-Host ("Detailed technical log: {0}`n" -f $LogPath)
+    Write-TechLog "RESULT: FAIL"
+    exit 2
 }
 
-Write-Host ("Log saved: {0}" -f $LogPath)
+if ($WarningCount -gt 0) {
+    Write-Host ""
+    Write-Host "RESULT: WARN — Cloud services are reachable, but warnings were detected." -ForegroundColor Yellow
+    Write-Host ("Detailed technical log: {0}`n" -f $LogPath)
+    Write-TechLog "RESULT: WARN"
+    exit 1
+}
+
+Write-Host ""
+Write-Host "RESULT: PASS — All required cloud resources and Cloud Gate are reachable." -ForegroundColor Green
 if (-not $Quality) {
-    Write-Host ("`nTip: For deeper channel quality, latency, MTU, and throughput tests, re-run with: powershell.exe -File {0} -Product {1} -Quality" -f $MyInvocation.MyCommand.Name, $Product)
+    Write-Host "Tip: For deeper channel quality and latency benchmarks, run with: -Quality" -ForegroundColor DarkGray
 }
-if ($TranscriptStarted) {
-    Stop-Transcript | Out-Null
-}
-exit $ExitCode
+Write-Host ("Detailed technical log: {0}`n" -f $LogPath)
+Write-TechLog "RESULT: PASS"
+exit 0

@@ -1,12 +1,16 @@
 #!/bin/sh
 
+# iRidi Server Health & System Overview
+# Comprehensive hardware identity, firmware version, runtime status,
+# thermal indicators, eMMC wear level (SMART), memory, storage, and network health.
+#
+# Usage: sh check_server_health.sh
+
 case "${1:-}" in
   -h|--help)
-    printf 'Usage: sh %s [options]\n' "${0##*/}"
-    printf '\n'
+    printf 'Usage: sh %s [options]\n\n' "${0##*/}"
     printf 'Options:\n'
-    printf '  -h, --help    Show this help message and exit\n'
-    printf '\n'
+    printf '  -h, --help    Show this help message and exit\n\n'
     printf 'Description:\n'
     printf '  Collects and reports comprehensive hardware identity, server firmware version,\n'
     printf '  runtime status, thermal indicators, eMMC wear level (SMART), memory, storage,\n'
@@ -15,94 +19,122 @@ case "${1:-}" in
     ;;
 esac
 
-# Auto-logging wrapper (POSIX sh compatible)
-if [ "${IRIDI_SERVER_HEALTH_LOG_ACTIVE:-0}" != "1" ]; then
-  CURRENT_DIRECTORY="$(pwd 2>/dev/null || printf '.')"
-  LOG_DIRECTORY="${IRIDI_DIAG_LOG_DIR:-$CURRENT_DIRECTORY}"
-  if [ ! -d "$LOG_DIRECTORY" ] || [ ! -w "$LOG_DIRECTORY" ]; then
-    LOG_DIRECTORY="/tmp"
-  fi
+TOOL_VERSION="1.1"
 
-  DEVICE_NAME="$(cat /sys/firmware/devicetree/base/serial-number 2>/dev/null | tr -d '\0')"
-  if [ -z "$DEVICE_NAME" ]; then
-    DEVICE_NAME="$(awk -F': *' '/Controller serial/{print $2}' /oem/hal/ccinfo 2>/dev/null | tr -d ' \r\t\n')"
-  fi
-  if [ -z "$DEVICE_NAME" ]; then
-    DEVICE_NAME="$(uname -n 2>/dev/null | tr -cs 'A-Za-z0-9._-' '_')"
-  fi
-  DEVICE_NAME="${DEVICE_NAME:-unknown_device}"
-
-  TIMESTAMP="$(date '+%Y%m%d_%H%M%S' 2>/dev/null || printf '00000000_000000')"
-  LOG_FILE="${LOG_DIRECTORY}/server_health_${DEVICE_NAME}_${TIMESTAMP}_$$.log"
-
-  export IRIDI_SERVER_HEALTH_LOG_ACTIVE=1
-  export IRIDI_SERVER_HEALTH_LOG_FILE="$LOG_FILE"
-
-  # Run diagnostic and stream through tee while stripping ANSI codes from log file
-  sh "$0" "$@" 2>&1 | tee "$LOG_FILE.raw"
-  SCRIPT_EXIT="${PIPESTATUS:-$?}"
-
-  # Strip ANSI color codes from the permanent log file
-  sed -e 's/\x1b\[[0-9;]*[mK]//g' "$LOG_FILE.raw" > "$LOG_FILE" 2>/dev/null
-  rm -f "$LOG_FILE.raw" 2>/dev/null
-
-  printf '\nLog saved: %s\n' "$LOG_FILE"
-
-  if [ "$SCRIPT_EXIT" -ne 0 ]; then
-    exit "$SCRIPT_EXIT"
-  fi
-
-  # Determine exit code from result
-  if grep -E 'RESULT: FAIL' "$LOG_FILE" >/dev/null 2>&1; then
-    exit 2
-  fi
-  if grep -E 'RESULT: WARN' "$LOG_FILE" >/dev/null 2>&1; then
-    exit 1
-  fi
-  exit 0
+# Setup logging directory & technical log file
+CURRENT_DIR="$(pwd 2>/dev/null || printf '.')"
+LOG_DIR="${IRIDI_DIAG_LOG_DIR:-$CURRENT_DIR}"
+if [ ! -d "$LOG_DIR" ] || [ ! -w "$LOG_DIR" ]; then
+  LOG_DIR="${TMPDIR:-/tmp}"
 fi
 
-# Color formatting if connected to a terminal
+DEVICE_NAME="$(cat /sys/firmware/devicetree/base/serial-number 2>/dev/null | tr -d '\0')"
+if [ -z "$DEVICE_NAME" ]; then
+  DEVICE_NAME="$(awk -F': *' '/Controller serial/{print $2}' /oem/hal/ccinfo 2>/dev/null | tr -d ' \r\t\n')"
+fi
+if [ -z "$DEVICE_NAME" ]; then
+  DEVICE_NAME="$(uname -n 2>/dev/null | tr -cs 'A-Za-z0-9._-' '_')"
+fi
+DEVICE_NAME="${DEVICE_NAME:-server}"
+
+TIMESTAMP="$(date '+%Y%m%d_%H%M%S' 2>/dev/null || printf '00000000_000000')"
+LOG_FILE="${LOG_DIR}/server_health_${DEVICE_NAME}_${TIMESTAMP}_$$.log"
+
+# Open File Descriptor 3 for technical log
+if ! exec 3>>"$LOG_FILE" 2>/dev/null; then
+  LOG_FILE="${TMPDIR:-/tmp}/server_health_${DEVICE_NAME}_${TIMESTAMP}_$$.log"
+  if ! exec 3>>"$LOG_FILE"; then
+    printf '[NOT OK] Could not open log file for writing: %s\n' "$LOG_FILE" >&2
+    exit 2
+  fi
+fi
+
+# Terminal colors (screen only)
 if [ -t 1 ] && [ "${NO_COLOR:-0}" = "0" ]; then
   C_RESET="$(printf '\033[0m')"
   C_BOLD="$(printf '\033[1m')"
+  C_DIM="$(printf '\033[2m')"
   C_GREEN="$(printf '\033[32m')"
   C_YELLOW="$(printf '\033[33m')"
   C_RED="$(printf '\033[31m')"
   C_CYAN="$(printf '\033[36m')"
+  C_GRAY="$(printf '\033[90m')"
 else
-  C_RESET=""; C_BOLD=""; C_GREEN=""; C_YELLOW=""; C_RED=""; C_CYAN=""
+  C_RESET=""
+  C_BOLD=""
+  C_DIM=""
+  C_GREEN=""
+  C_YELLOW=""
+  C_RED=""
+  C_CYAN=""
+  C_GRAY=""
 fi
 
-TOOL_VERSION="1.0"
+log_tech() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$*" >&3
+}
+
+log_tech_file() {
+  _HEADER="$1"
+  _FILE="$2"
+  if [ -s "$_FILE" ]; then
+    printf '[%s] --- BEGIN %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_HEADER" >&3
+    cat "$_FILE" >&3 2>/dev/null
+    printf '[%s] --- END %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_HEADER" >&3
+  fi
+}
+
+log_tech_cmd() {
+  _LABEL="$1"
+  shift
+  printf '[%s] --- CMD EXEC: %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_LABEL" >&3
+  "$@" >&3 2>&1 || true
+  printf '[%s] --- END CMD: %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_LABEL" >&3
+}
+
+set +e
+export LC_ALL=C
+
 STARTED_AT="$(date 2>/dev/null || printf 'unknown')"
 HOSTNAME_VAL="$(uname -n 2>/dev/null || printf 'unknown')"
-
 WARN_COUNT=0
 FAIL_COUNT=0
 
-separator() {
-  printf '%s\n' '----------------------------------------------------------------'
+cleanup() {
+  exec 3>&- 2>/dev/null || true
 }
+trap cleanup EXIT HUP INT TERM
 
-print_header() {
-  printf '%s%siRidi Server Health & System Overview%s\n' "$C_BOLD" "$C_CYAN" "$C_RESET"
-  printf 'Script version: %s\n' "$TOOL_VERSION"
-  printf 'Started: %s\n' "$STARTED_AT"
-  printf 'Host: %s | Kernel: %s\n' "$HOSTNAME_VAL" "$(uname -srm 2>/dev/null || printf 'Linux')"
-}
+# Technical Log Initial Header
+log_tech "================================================================================"
+log_tech "iRidi Server Health & System Diagnostic - Technical Log"
+log_tech "Version: $TOOL_VERSION | Started: $STARTED_AT"
+log_tech "Host: $HOSTNAME_VAL | Kernel: $(uname -srm 2>/dev/null)"
+log_tech "Log File: $LOG_FILE"
+log_tech "================================================================================"
+
+# Log base system files
+log_tech_file "OEM CCINFO (/oem/hal/ccinfo)" "/oem/hal/ccinfo"
+log_tech_file "CPUINFO (/proc/cpuinfo)" "/proc/cpuinfo"
+log_tech_file "MEMINFO (/proc/meminfo)" "/proc/meminfo"
+log_tech_file "UPTIME (/proc/uptime)" "/proc/uptime"
+log_tech_file "LOADAVG (/proc/loadavg)" "/proc/loadavg"
+
+# Screen Header
+printf '%s================================================================%s\n' "$C_CYAN" "$C_RESET"
+printf '  %siRidi Server Health & System Overview%s (v%s)\n' "$C_BOLD" "$C_RESET" "$TOOL_VERSION"
+printf '%s================================================================%s\n' "$C_CYAN" "$C_RESET"
+printf 'Started: %s | Host: %s | Kernel: %s\n\n' "$STARTED_AT" "$HOSTNAME_VAL" "$(uname -srm 2>/dev/null || printf 'Linux')"
 
 # --- SECTION 1: Hardware & System Identification ---
 check_hardware_identity() {
-  separator
-  printf '%s1. Hardware & System Identity%s\n' "$C_BOLD" "$C_RESET"
+  printf '%s1. Hardware & System Identity:%s\n' "$C_BOLD" "$C_RESET"
 
   MODEL=""
   SERIAL=""
   CPU_SERIAL=""
   SW_VERSION=""
 
-  # Try /oem/hal/ccinfo first
   if [ -r /oem/hal/ccinfo ]; then
     SERIAL="$(awk -F': *' '/Controller serial/{print $2}' /oem/hal/ccinfo | sed 's/^[ \t]*//;s/[ \t]*$//')"
     CPU_SERIAL="$(awk -F': *' '/Processor serial/{print $2}' /oem/hal/ccinfo | sed 's/^[ \t]*//;s/[ \t]*$//')"
@@ -110,7 +142,6 @@ check_hardware_identity() {
     SW_VERSION="$(awk -F': *' '/Software version/{print $2}' /oem/hal/ccinfo | sed 's/^[ \t]*//;s/[ \t]*$//')"
   fi
 
-  # Fallback to devicetree & proc
   if [ -z "$MODEL" ] && [ -r /sys/firmware/devicetree/base/model ]; then
     MODEL="$(tr -d '\0' </sys/firmware/devicetree/base/model | sed 's/^[ \t]*//;s/[ \t]*$//')"
   fi
@@ -127,12 +158,7 @@ check_hardware_identity() {
     SW_VERSION="$(awk -F'=' '/PRETTY_NAME/{gsub(/"/, ""); print $2}' /etc/os-release)"
   fi
 
-  printf '  Device Model:         %s%s%s\n' "$C_BOLD" "${MODEL:-Unknown Model}" "$C_RESET"
-  printf '  Controller Serial:    %s%s%s\n' "$C_BOLD" "${SERIAL:-n/a}" "$C_RESET"
-  printf '  Processor Serial:     %s\n' "${CPU_SERIAL:-n/a}"
-  printf '  Base OS:              %s\n' "${SW_VERSION:-Buildroot}"
-  
-  # System Uptime & Load
+  UPTIME_FMT="n/a"
   if [ -r /proc/uptime ]; then
     UPTIME_SECS="$(cut -d' ' -f1 /proc/uptime | cut -d'.' -f1)"
     DAYS=$((UPTIME_SECS / 86400))
@@ -145,21 +171,24 @@ check_hardware_identity() {
     else
       UPTIME_FMT="${MINS}m"
     fi
-    printf '  System Uptime:        %s\n' "$UPTIME_FMT"
   fi
 
+  LOAD_FMT="n/a"
   if [ -r /proc/loadavg ]; then
     LOAD_1="$(cut -d' ' -f1 /proc/loadavg)"
     LOAD_5="$(cut -d' ' -f2 /proc/loadavg)"
     LOAD_15="$(cut -d' ' -f3 /proc/loadavg)"
-    printf '  Load Average:         %s, %s, %s (1m, 5m, 15m)\n' "$LOAD_1" "$LOAD_5" "$LOAD_15"
+    LOAD_FMT="$LOAD_1, $LOAD_5, $LOAD_15"
   fi
+
+  printf '  • Model:        %-24s Serial: %s\n' "${MODEL:-Unknown Model}" "${SERIAL:-n/a}"
+  printf '  • Base OS:      %-24s Uptime: %s (Load: %s)\n' "${SW_VERSION:-Linux}" "$UPTIME_FMT" "$LOAD_FMT"
+  log_tech "IDENTITY: model=$MODEL serial=$SERIAL cpu_serial=$CPU_SERIAL os=$SW_VERSION uptime=$UPTIME_FMT load=$LOAD_FMT"
 }
 
 # --- SECTION 2: iRidi Server Runtime & Firmware ---
 check_iridi_runtime() {
-  separator
-  printf '%s2. iRidi Server Firmware & Runtime%s\n' "$C_BOLD" "$C_RESET"
+  printf '\n%s2. iRidi Server Runtime & Services:%s\n' "$C_BOLD" "$C_RESET"
 
   PACKAGE_VER=""
   PACKAGE_TIME=""
@@ -171,7 +200,6 @@ check_iridi_runtime() {
     PACKAGE_VER="$(awk -F': *' '/Version:/{print $2}' /var/lib/opkg/info/iridiumserver.control)"
   fi
 
-  # Determine server flavor (Bus77 Home, iRidi Pro, ProAV, i3 KNX, Lite)
   FLAVOR="iRidi Server"
   BIN_PATH="/iridiumserver/iridium"
   if [ -f "$BIN_PATH" ]; then
@@ -186,140 +214,108 @@ check_iridi_runtime() {
     fi
   fi
 
-  printf '  Server Edition:       %s%s%s\n' "$C_BOLD" "$FLAVOR" "$C_RESET"
-  if [ -n "$PACKAGE_VER" ]; then
-    printf '  Package Version:      %s%s%s\n' "$C_GREEN" "$PACKAGE_VER" "$C_RESET"
-  else
-    printf '  Package Version:      unknown\n'
-  fi
-
-  if [ -n "$PACKAGE_TIME" ] && [ "$PACKAGE_TIME" -gt 0 ] 2>/dev/null; then
-    INSTALLED_DATE="$(date -d "@$PACKAGE_TIME" 2>/dev/null || date -r "$PACKAGE_TIME" 2>/dev/null || printf '')"
-    if [ -n "$INSTALLED_DATE" ]; then
-      printf '  Installed Date:       %s\n' "$INSTALLED_DATE"
-    fi
-  fi
-
-  # Check process status
   IRIDIUM_PID="$(pidof iridium 2>/dev/null | awk '{print $1}')"
   if [ -n "$IRIDIUM_PID" ]; then
-    # Memory and CPU stats
     MEM_RSS="$(awk '/VmRSS/{print $2,$3}' "/proc/$IRIDIUM_PID/status" 2>/dev/null || printf 'n/a')"
     THREADS="$(awk '/Threads/{print $2}' "/proc/$IRIDIUM_PID/status" 2>/dev/null || printf 'n/a')"
-    printf '  Service Process:      %sRUNNING%s (PID %s, Memory: %s, Threads: %s)\n' "$C_GREEN" "$C_RESET" "$IRIDIUM_PID" "$MEM_RSS" "$THREADS"
-    printf '  [%sOK%s] iRidi Server service is actively running.\n' "$C_GREEN" "$C_RESET"
+    printf '  %s[OK]%s        %s (v%s) — RUNNING (PID %s, RAM: %s, %s threads)\n' \
+      "$C_GREEN" "$C_RESET" "$FLAVOR" "${PACKAGE_VER:-unknown}" "$IRIDIUM_PID" "$MEM_RSS" "$THREADS"
+    log_tech "RUNTIME: status=RUNNING flavor=$FLAVOR ver=$PACKAGE_VER pid=$IRIDIUM_PID rss=$MEM_RSS threads=$THREADS"
   else
-    printf '  Service Process:      %sNOT RUNNING%s\n' "$C_RED" "$C_RESET"
-    printf '  [%sNOT OK%s] iRidi Server executable is not running!\n' "$C_RED" "$C_RESET"
+    printf '  %s[NOT OK]%s    %s — NOT RUNNING (Process stopped or failed!)\n' "$C_RED" "$C_RESET" "$FLAVOR"
     FAIL_COUNT=$((FAIL_COUNT + 1))
+    log_tech "RUNTIME: status=STOPPED flavor=$FLAVOR ver=$PACKAGE_VER"
   fi
 
-  # Check active ports
-  printf '  Active Server Ports:\n'
+  # Log socket connections
   NETSTAT_OUT="$(ss -tulpn 2>/dev/null || netstat -tulpn 2>/dev/null)"
+  log_tech_cmd "OPEN PORTS (ss/netstat)" ss -tulpn
+  
+  OPEN_PORTS=""
   for PORT in 8888 8443 30464 30465 30467 65534 8883 2812 22; do
-    DESC=""
-    case "$PORT" in
-      8888) DESC="Web Interface (HTTP)" ;;
-      8443) DESC="Web Interface (HTTPS)" ;;
-      30464) DESC="Client Discovery & App Link" ;;
-      30465) DESC="Client Connection Port" ;;
-      30467) DESC="Internal Gateway Port" ;;
-      65534) DESC="CAN/Bus77 UDP Gateway" ;;
-      8883) DESC="Mosquitto MQTT (TLS)" ;;
-      2812) DESC="Monit Process Supervisor" ;;
-      22)   DESC="SSH Management" ;;
-    esac
     if printf '%s\n' "$NETSTAT_OUT" | grep -q ":${PORT} "; then
-      printf '    - Port %-5s [%sOPEN%s]  - %s\n' "$PORT" "$C_GREEN" "$C_RESET" "$DESC"
+      OPEN_PORTS="${OPEN_PORTS:+$OPEN_PORTS, }$PORT"
     fi
   done
+  [ -n "$OPEN_PORTS" ] && printf '  • Active Listening Ports: %s\n' "$OPEN_PORTS"
 }
 
 # --- SECTION 3: CPU & Thermal Health ---
 check_thermal_and_cpu() {
-  separator
-  printf '%s3. CPU & Thermal Sensors (Hardware Health)%s\n' "$C_BOLD" "$C_RESET"
+  printf '\n%s3. CPU & Thermal Health:%s\n' "$C_BOLD" "$C_RESET"
 
   THERMAL_FOUND=0
+  MAX_TEMP=0
   for TZ_DIR in /sys/class/thermal/thermal_zone*; do
     if [ -d "$TZ_DIR" ]; then
       THERMAL_FOUND=1
       TZ_TYPE="$(cat "$TZ_DIR/type" 2>/dev/null || printf 'zone')"
       TZ_RAW="$(cat "$TZ_DIR/temp" 2>/dev/null || printf '0')"
       TZ_C=$(( TZ_RAW / 1000 ))
-      
-      if [ "$TZ_C" -lt 75 ]; then
-        printf '  %-18s: %s%d°C%s [%sOK%s]\n' "$TZ_TYPE" "$C_GREEN" "$TZ_C" "$C_RESET" "$C_GREEN" "$C_RESET"
-      elif [ "$TZ_C" -lt 85 ]; then
-        printf '  %-18s: %s%d°C%s [%sATTENTION%s - elevated temperature]\n' "$TZ_TYPE" "$C_YELLOW" "$TZ_C" "$C_RESET" "$C_YELLOW" "$C_RESET"
-        WARN_COUNT=$((WARN_COUNT + 1))
-      else
-        printf '  %-18s: %s%d°C%s [%sCRITICAL%s - overheating!]\n' "$TZ_TYPE" "$C_RED" "$TZ_C" "$C_RESET" "$C_RED" "$C_RESET"
-        FAIL_COUNT=$((FAIL_COUNT + 1))
-      fi
+      log_tech "THERMAL: zone=$TZ_DIR type=$TZ_TYPE temp=${TZ_C}C"
+      [ "$TZ_C" -gt "$MAX_TEMP" ] && MAX_TEMP="$TZ_C"
     fi
   done
 
-  if [ "$THERMAL_FOUND" -eq 0 ]; then
-    printf '  [INFO] No hardware thermal sensors detected under /sys/class/thermal.\n'
+  if [ "$THERMAL_FOUND" -eq 1 ]; then
+    if [ "$MAX_TEMP" -lt 75 ]; then
+      printf '  %s[OK]%s        CPU / SoC Temperature: %d°C (Normal)\n' "$C_GREEN" "$C_RESET" "$MAX_TEMP"
+    elif [ "$MAX_TEMP" -lt 85 ]; then
+      printf '  %s[ATTENTION]%s CPU / SoC Temperature: %d°C (Elevated temperature)\n' "$C_YELLOW" "$C_RESET" "$MAX_TEMP"
+      WARN_COUNT=$((WARN_COUNT + 1))
+    else
+      printf '  %s[NOT OK]%s    CPU / SoC Temperature: %d°C (CRITICAL OVERHEATING)\n' "$C_RED" "$C_RESET" "$MAX_TEMP"
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+  else
+    printf '  %s[INFO]%s      No hardware thermal sensors exposed under /sys/class/thermal\n' "$C_GRAY" "$C_RESET"
   fi
 
-  # CPU Cores & Current Frequency
   CPU_CORES="$(grep -c '^processor' /proc/cpuinfo 2>/dev/null || printf '1')"
   CPU_FREQ_RAW="$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null || cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq 2>/dev/null)"
   if [ -n "$CPU_FREQ_RAW" ] && [ "$CPU_FREQ_RAW" -gt 0 ] 2>/dev/null; then
     CPU_MHZ=$(( CPU_FREQ_RAW / 1000 ))
-    printf '  CPU Configuration : %s cores @ %d MHz\n' "$CPU_CORES" "$CPU_MHZ"
+    printf '  • CPU Topology: %s cores @ %d MHz\n' "$CPU_CORES" "$CPU_MHZ"
   else
-    printf '  CPU Configuration : %s cores\n' "$CPU_CORES"
+    printf '  • CPU Topology: %s cores\n' "$CPU_CORES"
   fi
 }
 
 # --- SECTION 4: Memory (RAM) Health ---
 check_memory_health() {
-  separator
-  printf '%s4. Memory (RAM) Utilization%s\n' "$C_BOLD" "$C_RESET"
+  printf '\n%s4. Memory (RAM) Utilization:%s\n' "$C_BOLD" "$C_RESET"
 
   if [ -r /proc/meminfo ]; then
     MEM_TOTAL_KB="$(awk '/MemTotal/{print $2}' /proc/meminfo)"
     MEM_FREE_KB="$(awk '/MemFree/{print $2}' /proc/meminfo)"
     MEM_AVAIL_KB="$(awk '/MemAvailable/{print $2}' /proc/meminfo)"
-    MEM_BUFFERS_KB="$(awk '/Buffers/{print $2}' /proc/meminfo)"
-    MEM_CACHED_KB="$(awk '/^Cached/{print $2}' /proc/meminfo)"
-
     MEM_AVAIL_KB="${MEM_AVAIL_KB:-$MEM_FREE_KB}"
+    
     MEM_TOTAL_MB=$(( MEM_TOTAL_KB / 1024 ))
     MEM_AVAIL_MB=$(( MEM_AVAIL_KB / 1024 ))
     MEM_USED_MB=$(( MEM_TOTAL_MB - MEM_AVAIL_MB ))
 
     MEM_PERCENT=0
-    if [ "$MEM_TOTAL_MB" -gt 0 ]; then
-      MEM_PERCENT=$(( (MEM_USED_MB * 100) / MEM_TOTAL_MB ))
-    fi
+    [ "$MEM_TOTAL_MB" -gt 0 ] && MEM_PERCENT=$(( (MEM_USED_MB * 100) / MEM_TOTAL_MB ))
 
-    printf '  Total Memory      : %s MB\n' "$MEM_TOTAL_MB"
-    printf '  Used Memory       : %s MB (%d%%)\n' "$MEM_USED_MB" "$MEM_PERCENT"
-    printf '  Available Memory  : %s MB\n' "$MEM_AVAIL_MB"
+    log_tech "MEMORY: total=${MEM_TOTAL_MB}MB used=${MEM_USED_MB}MB (${MEM_PERCENT}%) avail=${MEM_AVAIL_MB}MB"
 
     if [ "$MEM_PERCENT" -lt 85 ]; then
-      printf '  [%sOK%s] Memory utilization is normal.\n' "$C_GREEN" "$C_RESET"
+      printf '  %s[OK]%s        Memory Usage: %s MB / %s MB used (%d%%)\n' "$C_GREEN" "$C_RESET" "$MEM_USED_MB" "$MEM_TOTAL_MB" "$MEM_PERCENT"
     elif [ "$MEM_PERCENT" -lt 95 ]; then
-      printf '  [%sATTENTION%s] Memory usage is high (%d%% used).\n' "$C_YELLOW" "$C_RESET" "$MEM_PERCENT"
+      printf '  %s[ATTENTION]%s Memory Usage: %s MB / %s MB used (%d%%) — High memory load\n' "$C_YELLOW" "$C_RESET" "$MEM_USED_MB" "$MEM_TOTAL_MB" "$MEM_PERCENT"
       WARN_COUNT=$((WARN_COUNT + 1))
     else
-      printf '  [%sNOT OK%s] Memory exhaustion risk (%d%% used, only %s MB free).\n' "$C_RED" "$C_RESET" "$MEM_PERCENT" "$MEM_AVAIL_MB"
+      printf '  %s[NOT OK]%s    Memory Usage: %s MB / %s MB used (%d%%) — Exhaustion risk (only %s MB free)\n' "$C_RED" "$C_RESET" "$MEM_USED_MB" "$MEM_TOTAL_MB" "$MEM_PERCENT" "$MEM_AVAIL_MB"
       FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
   fi
 }
 
-# --- SECTION 5: eMMC Storage Wear & SMART Health ---
+# --- SECTION 5: Storage & eMMC Wear Indicators (SMART) ---
 check_emmc_and_storage() {
-  separator
-  printf '%s5. Storage & eMMC Wear Indicators (SMART)%s\n' "$C_BOLD" "$C_RESET"
+  printf '\n%s5. Storage & eMMC Wear Indicators (SMART):%s\n' "$C_BOLD" "$C_RESET"
 
-  # Detect eMMC device path
   MMC_DEV=""
   for CANDIDATE in /sys/class/mmc_host/mmc1/mmc1:0001 /sys/class/mmc_host/mmc0/mmc0:0001 /sys/block/mmcblk0/device /sys/block/mmcblk1/device; do
     if [ -d "$CANDIDATE" ]; then
@@ -331,7 +327,6 @@ check_emmc_and_storage() {
   if [ -n "$MMC_DEV" ]; then
     MMC_NAME="$(cat "$MMC_DEV/name" 2>/dev/null)"
     MMC_MANFID="$(cat "$MMC_DEV/manfid" 2>/dev/null)"
-    MMC_DATE="$(cat "$MMC_DEV/date" 2>/dev/null)"
     MMC_LIFE="$(cat "$MMC_DEV/life_time" 2>/dev/null)"
     MMC_PRE_EOL="$(cat "$MMC_DEV/pre_eol_info" 2>/dev/null)"
 
@@ -344,95 +339,81 @@ check_emmc_and_storage() {
       0x0000fe|0xfe) MANUFACTURER_STR="Micron" ;;
     esac
 
-    printf '  eMMC Model        : %s (%s, date: %s)\n' "${MMC_NAME:-eMMC}" "$MANUFACTURER_STR" "${MMC_DATE:-n/a}"
-    
-    # Life Time Indicators
     LIFE_A="$(printf '%s' "$MMC_LIFE" | awk '{print $1}')"
     LIFE_B="$(printf '%s' "$MMC_LIFE" | awk '{print $2}')"
     
     decode_life() {
       case "$1" in
-        0x01|0x1|1) echo "0-10% life used" ;;
-        0x02|0x2|2) echo "10-20% life used" ;;
-        0x03|0x3|3) echo "20-30% life used" ;;
-        0x04|0x4|4) echo "30-40% life used" ;;
-        0x05|0x5|5) echo "40-50% life used" ;;
-        0x06|0x6|6) echo "50-60% life used" ;;
-        0x07|0x7|7) echo "60-70% life used" ;;
-        0x08|0x8|8) echo "70-80% life used" ;;
-        0x09|0x9|9) echo "80-90% life used" ;;
-        0x0a|0xa|10) echo "90-100% life used (critical)" ;;
-        0x0b|0xb|11) echo "exceeded maximum estimated life" ;;
-        *) echo "not reported ($1)" ;;
+        0x01|0x1|1) echo "0-10% used" ;;
+        0x02|0x2|2) echo "10-20% used" ;;
+        0x03|0x3|3) echo "20-30% used" ;;
+        0x04|0x4|4) echo "30-40% used" ;;
+        0x05|0x5|5) echo "40-50% used" ;;
+        0x06|0x6|6) echo "50-60% used" ;;
+        0x07|0x7|7) echo "60-70% used" ;;
+        0x08|0x8|8) echo "70-80% used" ;;
+        0x09|0x9|9) echo "80-90% used" ;;
+        0x0a|0xa|10) echo "90-100% used" ;;
+        0x0b|0xb|11) echo "exceeded life" ;;
+        *) echo "n/a" ;;
       esac
     }
 
-    if [ -n "$LIFE_A" ]; then
-      printf '  Wear Indicator A  : %s (%s)\n' "$LIFE_A" "$(decode_life "$LIFE_A")"
-      printf '  Wear Indicator B  : %s (%s)\n' "$LIFE_B" "$(decode_life "$LIFE_B")"
-      if [ "$LIFE_A" = "0x0a" ] || [ "$LIFE_A" = "0x0b" ] || [ "$LIFE_B" = "0x0a" ] || [ "$LIFE_B" = "0x0b" ]; then
-        printf '  [%sCRITICAL%s] eMMC flash storage has reached end of rated endurance!\n' "$C_RED" "$C_RESET"
-        FAIL_COUNT=$((FAIL_COUNT + 1))
-      else
-        printf '  [%sOK%s] eMMC endurance level is healthy.\n' "$C_GREEN" "$C_RESET"
-      fi
-    fi
+    log_tech "EMMC: dev=$MMC_DEV name=$MMC_NAME manfid=$MMC_MANFID ($MANUFACTURER_STR) life_raw='$MMC_LIFE' pre_eol=$MMC_PRE_EOL"
 
-    # Pre-EOL State
-    case "$MMC_PRE_EOL" in
-      0x01|0x1|1)
-        printf '  Pre-EOL State     : 0x01 Normal [%sOK%s]\n' "$C_GREEN" "$C_RESET"
-        ;;
-      0x02|0x2|2)
-        printf '  Pre-EOL State     : 0x02 Warning (consumed 80%% of reserved blocks) [%sATTENTION%s]\n' "$C_YELLOW" "$C_RESET"
-        WARN_COUNT=$((WARN_COUNT + 1))
-        ;;
-      0x03|0x3|3)
-        printf '  Pre-EOL State     : 0x03 Urgent (consumed reserved blocks) [%sCRITICAL%s]\n' "$C_RED" "$C_RESET"
-        FAIL_COUNT=$((FAIL_COUNT + 1))
-        ;;
-      *)
-        printf '  Pre-EOL State     : %s\n' "${MMC_PRE_EOL:-n/a}"
-        ;;
-    esac
+    if [ "$LIFE_A" = "0x0a" ] || [ "$LIFE_A" = "0x0b" ] || [ "$LIFE_B" = "0x0a" ] || [ "$LIFE_B" = "0x0b" ] || [ "$MMC_PRE_EOL" = "0x03" ]; then
+      printf '  %s[NOT OK]%s    eMMC Flash: %s (%s) — CRITICAL WEAR: Life A: %s, Life B: %s\n' \
+        "$C_RED" "$C_RESET" "${MMC_NAME:-eMMC}" "$MANUFACTURER_STR" "$(decode_life "$LIFE_A")" "$(decode_life "$LIFE_B")"
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+    elif [ "$MMC_PRE_EOL" = "0x02" ] || [ "$LIFE_A" = "0x09" ] || [ "$LIFE_B" = "0x09" ]; then
+      printf '  %s[ATTENTION]%s eMMC Flash: %s (%s) — ELEVATED WEAR: Life A: %s, Life B: %s\n' \
+        "$C_YELLOW" "$C_RESET" "${MMC_NAME:-eMMC}" "$MANUFACTURER_STR" "$(decode_life "$LIFE_A")" "$(decode_life "$LIFE_B")"
+      WARN_COUNT=$((WARN_COUNT + 1))
+    else
+      printf '  %s[OK]%s        eMMC Flash: %s (%s) — Wear: %s (Health: Normal)\n' \
+        "$C_GREEN" "$C_RESET" "${MMC_NAME:-eMMC}" "$MANUFACTURER_STR" "$(decode_life "$LIFE_A")"
+    fi
   else
-    printf '  [INFO] eMMC sysfs node not directly accessible.\n'
+    printf '  %s[INFO]%s      eMMC sysfs node not directly accessible\n' "$C_GRAY" "$C_RESET"
   fi
 
-  # Partition usage
-  printf '  Partition Space Status:\n'
-  df -h / /userdata /oem 2>/dev/null | awk 'NR>1 { printf "    - %-14s: %6s total, %6s free (%4s used)\n", $6, $2, $4, $5 }'
+  # Partition Space
+  DF_OUT="$(df -h / /userdata /oem 2>/dev/null)"
+  log_tech_cmd "DISK USAGE (df -h)" df -h
+  printf '  • Storage Partitions:\n'
+  printf '%s\n' "$DF_OUT" | awk 'NR>1 { printf "    - %-14s: %6s total, %6s free (%4s used)\n", $6, $2, $4, $5 }'
 
   # Kernel error scan
   ERR_COUNT=0
   if command -v dmesg >/dev/null 2>&1; then
     ERR_COUNT="$(dmesg 2>/dev/null | grep -ciE '(Buffer I/O error|EXT4-fs error|blk_update_request: I/O error|mmc.*error|end_request: I/O error)' || true)"
+    log_tech_cmd "STORAGE KERNEL LOG SCAN" sh -c "dmesg | grep -iE '(Buffer I/O error|EXT4-fs error|blk_update_request: I/O error|mmc.*error|end_request: I/O error)'"
   fi
   if [ "$ERR_COUNT" -eq 0 ]; then
-    printf '  [%sOK%s] No storage I/O or EXT4 filesystem errors detected in kernel log.\n' "$C_GREEN" "$C_RESET"
+    printf '  %s[OK]%s        Kernel Storage Ring Buffer: Clean (0 filesystem / I/O errors)\n' "$C_GREEN" "$C_RESET"
   else
-    printf '  [%sATTENTION%s] %d storage/filesystem errors found in kernel log!\n' "$C_YELLOW" "$C_RESET" "$ERR_COUNT"
+    printf '  %s[ATTENTION]%s Kernel Storage Ring Buffer: %d filesystem/storage error events detected!\n' "$C_YELLOW" "$C_RESET" "$ERR_COUNT"
     WARN_COUNT=$((WARN_COUNT + 1))
   fi
 }
 
 # --- SECTION 6: Network & CAN Bus Status ---
 check_network_and_can() {
-  separator
-  printf '%s6. Network & Communication Interfaces%s\n' "$C_BOLD" "$C_RESET"
+  printf '\n%s6. Network & Communication Interfaces:%s\n' "$C_BOLD" "$C_RESET"
 
   # Ethernet (eth0)
   if [ -d /sys/class/net/eth0 ]; then
     ETH_IP="$(ip -4 addr show eth0 2>/dev/null | awk '/inet /{print $2}' | head -n 1)"
-    ETH_MAC="$(cat /sys/class/net/eth0/address 2>/dev/null)"
     ETH_OPER="$(cat /sys/class/net/eth0/operstate 2>/dev/null)"
     ETH_SPEED="$(cat /sys/class/net/eth0/speed 2>/dev/null || printf 'n/a')"
     
-    printf '  Interface eth0    : %s (%s, %s Mbps)\n' "${ETH_IP:-no IPv4}" "${ETH_OPER:-unknown}" "${ETH_SPEED:-n/a}"
-    printf '  MAC Address       : %s\n' "${ETH_MAC:-unknown}"
-    
+    log_tech "NET eth0: oper=$ETH_OPER ip=$ETH_IP speed=$ETH_SPEED"
+
     if [ "$ETH_OPER" = "up" ]; then
-      printf '  [%sOK%s] Ethernet link is UP.\n' "$C_GREEN" "$C_RESET"
+      printf '  %s[OK]%s        eth0: Link UP (%s Mbps) | IP: %s\n' "$C_GREEN" "$C_RESET" "${ETH_SPEED:-1000}" "${ETH_IP:-no IPv4}"
+    else
+      printf '  %s[ATTENTION]%s eth0: Link is %s\n' "$C_YELLOW" "$C_RESET" "${ETH_OPER:-DOWN}"
+      WARN_COUNT=$((WARN_COUNT + 1))
     fi
   fi
 
@@ -444,48 +425,58 @@ check_network_and_can() {
       CAN_DETAIL="$(ip -details link show can0 2>/dev/null)"
       CAN_STATE="$(echo "$CAN_DETAIL" | awk '/can .* state/ {for(i=1;i<=NF;i++) if($i=="state") print $(i+1)}' | head -n 1)"
       CAN_BITRATE="$(echo "$CAN_DETAIL" | awk '/bitrate/ {for(i=1;i<=NF;i++) if($i=="bitrate") print $(i+1)}' | head -n 1)"
+      log_tech_file "CAN0 DETAILS (ip -details link show can0)" "$CAN_DETAIL"
     fi
     CAN_STATE="${CAN_STATE:-UP}"
-    printf '  Interface can0    : %s (State: %s, Bitrate: %s bit/s)\n' "Bus77 CAN Bus" "$CAN_STATE" "${CAN_BITRATE:-125000}"
-    if [ "$CAN_STATE" = "ERROR-ACTIVE" ]; then
-      printf '  [%sOK%s] CAN controller is ERROR-ACTIVE (bus connected and active).\n' "$C_GREEN" "$C_RESET"
+    log_tech "CAN can0: state=$CAN_STATE bitrate=$CAN_BITRATE"
+
+    if [ "$CAN_STATE" = "ERROR-ACTIVE" ] || [ "$CAN_STATE" = "UP" ]; then
+      printf '  %s[OK]%s        can0: State %s | Bitrate: %s bit/s (Bus connected)\n' "$C_GREEN" "$C_RESET" "$CAN_STATE" "${CAN_BITRATE:-125000}"
     elif [ "$CAN_STATE" = "ERROR-PASSIVE" ]; then
-      printf '  [%sINFO%s] CAN controller is in ERROR-PASSIVE state (normal if no devices or cable connected).\n' "$C_CYAN" "$C_RESET"
+      printf '  %s[INFO]%s      can0: State ERROR-PASSIVE | %s bit/s (Normal if no modules connected)\n' "$C_GRAY" "$C_RESET" "${CAN_BITRATE:-125000}"
     elif [ "$CAN_STATE" = "BUS-OFF" ]; then
-      printf '  [%sATTENTION%s] CAN controller is in BUS-OFF state (bus failure / heavy collision).\n' "$C_YELLOW" "$C_RESET"
+      printf '  %s[ATTENTION]%s can0: State BUS-OFF (Bus failure / heavy collision detected)\n' "$C_YELLOW" "$C_RESET"
       WARN_COUNT=$((WARN_COUNT + 1))
-    else
-      printf '  [%sOK%s] CAN interface is ready.\n' "$C_GREEN" "$C_RESET"
     fi
   else
-    printf '  Interface can0    : not present (device operates without hardware CAN bus)\n'
+    printf '  • can0: not present (controller has no hardware CAN bus)\n'
   fi
 
   # Default Gateway & DNS
   DEF_GW="$(ip route show default 2>/dev/null | awk '/default via/{print $3}' | head -n 1)"
   DNS_SERVERS="$(awk '/nameserver/{printf "%s ", $2}' /etc/resolv.conf 2>/dev/null)"
-  printf '  Default Gateway   : %s\n' "${DEF_GW:-n/a}"
-  printf '  DNS Resolvers     : %s\n' "${DNS_SERVERS:-n/a}"
+  printf '  • Default Gateway: %-18s DNS: %s\n' "${DEF_GW:-n/a}" "${DNS_SERVERS:-n/a}"
+  log_tech "NET CONFIG: gateway=$DEF_GW dns='$DNS_SERVERS'"
 }
 
 # --- SECTION 7: Summary & Verdict ---
 print_summary() {
-  separator
-  printf '%sSUMMARY%s\n' "$C_BOLD" "$C_RESET"
-  printf '  Failures:        %d\n' "$FAIL_COUNT"
-  printf '  Attention items: %d\n' "$WARN_COUNT"
+  printf '\n%s================================================================%s\n' "$C_CYAN" "$C_RESET"
+  printf '  %sSYSTEM HEALTH SUMMARY%s\n' "$C_BOLD" "$C_RESET"
+  printf '%s================================================================%s\n' "$C_CYAN" "$C_RESET"
+  printf 'Failures:        %d\n' "$FAIL_COUNT"
+  printf 'Attention items: %d\n' "$WARN_COUNT"
+
+  log_tech "SUMMARY: failures=$FAIL_COUNT warnings=$WARN_COUNT"
 
   if [ "$FAIL_COUNT" -gt 0 ]; then
-    printf '%sRESULT: FAIL - CRITICAL ISSUES DETECTED (%d failure(s), %d warning(s))%s\n' "$C_RED" "$FAIL_COUNT" "$WARN_COUNT" "$C_RESET"
+    printf '\n%sRESULT: FAIL — Critical hardware or service issues detected (%d failures, %d warnings)%s\n' "$C_RED" "$FAIL_COUNT" "$WARN_COUNT" "$C_RESET"
+    printf 'Detailed technical log: %s\n\n' "$LOG_FILE"
+    log_tech "RESULT: FAIL"
+    exit 2
   elif [ "$WARN_COUNT" -gt 0 ]; then
-    printf '%sRESULT: WARN - ATTENTION REQUIRED (%d warning(s), 0 failures)%s\n' "$C_YELLOW" "$WARN_COUNT" "$C_RESET"
+    printf '\n%sRESULT: WARN — System is operational, but %d item(s) require attention%s\n' "$C_YELLOW" "$WARN_COUNT" "$C_RESET"
+    printf 'Detailed technical log: %s\n\n' "$LOG_FILE"
+    log_tech "RESULT: WARN"
+    exit 1
   else
-    printf '%sRESULT: PASS - SYSTEM HEALTH IS NORMAL (0 failures, 0 warnings)%s\n' "$C_GREEN" "$C_RESET"
+    printf '\n%sRESULT: PASS — All hardware and system components are healthy (0 failures, 0 warnings)%s\n' "$C_GREEN" "$C_RESET"
+    printf 'Detailed technical log: %s\n\n' "$LOG_FILE"
+    log_tech "RESULT: PASS"
+    exit 0
   fi
 }
 
-# Main execution flow
-print_header
 check_hardware_identity
 check_iridi_runtime
 check_thermal_and_cpu

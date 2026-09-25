@@ -13,57 +13,62 @@ esac
 # Only Search and Device Info requests are sent; interface settings stay unchanged.
 # Usage: sh check_can_bus.sh [--interface can0|all] [--duration 15] [--scan-only] [--json]
 
-if [ "${IRIDI_CAN_LOG_ACTIVE:-0}" != "1" ]; then
-  CURRENT_DIRECTORY="$(pwd 2>/dev/null || printf '.')"
-  LOG_DIRECTORY="${IRIDI_DIAG_LOG_DIR:-$CURRENT_DIRECTORY}"
-  if [ ! -d "$LOG_DIRECTORY" ] || [ ! -w "$LOG_DIRECTORY" ]; then
-    LOG_DIRECTORY="${TMPDIR:-/tmp}"
-  fi
-  HOST_LABEL="$(hostname 2>/dev/null || printf server)"
-  HOST_LABEL="$(printf '%s' "$HOST_LABEL" | tr -c 'A-Za-z0-9._-' '_')"
-  [ -n "$HOST_LABEL" ] || HOST_LABEL=server
-  LOG_TIMESTAMP="$(date '+%Y%m%d_%H%M%S' 2>/dev/null || printf unknown_time)"
-  LOG_FILE="$LOG_DIRECTORY/can_diagnostic_${HOST_LABEL}_${LOG_TIMESTAMP}_$$.log"
-  export IRIDI_CAN_LOG_ACTIVE=1
-  export IRIDI_CAN_LOG_FILE="$LOG_FILE"
-
-  colorize_output() {
-    awk '
-      /\[OK\]|RESULT: PASS/ { printf "\033[32m%s\033[0m\n", $0; fflush(); next }
-      /\[ATTENTION\]|RESULT: WARN/ { printf "\033[33m%s\033[0m\n", $0; fflush(); next }
-      /\[NOT OK\]|RESULT: FAIL/ { printf "\033[31m%s\033[0m\n", $0; fflush(); next }
-      { print; fflush() }
-    '
-  }
-
-  if command -v tee >/dev/null 2>&1; then
-    if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && command -v awk >/dev/null 2>&1; then
-      sh "$0" "$@" 2>&1 | tee "$LOG_FILE" | colorize_output
-    else
-      sh "$0" "$@" 2>&1 | tee "$LOG_FILE"
-    fi
-    PIPELINE_RC=$?
-    RESULT_LINE="$(grep '^RESULT:' "$LOG_FILE" 2>/dev/null | tail -n 1)"
-    case "$RESULT_LINE" in
-      *PASS*) FINAL_RC=0 ;;
-      *WARN*) FINAL_RC=1 ;;
-      *FAIL*) FINAL_RC=2 ;;
-      *) FINAL_RC=2 ;;
-    esac
-    if [ "$PIPELINE_RC" -ne 0 ]; then
-      FINAL_RC=2
-      printf '[NOT OK] The log file could not be written completely.\n'
-    fi
-    printf '\nLog saved: %s\n' "$LOG_FILE" | tee -a "$LOG_FILE"
-    exit "$FINAL_RC"
-  fi
-
-  sh "$0" "$@" >"$LOG_FILE" 2>&1
-  FINAL_RC=$?
-  cat "$LOG_FILE"
-  printf '\nLog saved: %s\n' "$LOG_FILE"
-  exit "$FINAL_RC"
+# Setup logging directory & technical log file
+CURRENT_DIR="$(pwd 2>/dev/null || printf '.')"
+LOG_DIR="${IRIDI_DIAG_LOG_DIR:-$CURRENT_DIR}"
+if [ ! -d "$LOG_DIR" ] || [ ! -w "$LOG_DIR" ]; then
+  LOG_DIR="${TMPDIR:-/tmp}"
 fi
+
+HOST_LABEL="$(hostname 2>/dev/null || printf server)"
+HOST_LABEL="$(printf '%s' "$HOST_LABEL" | tr -c 'A-Za-z0-9._-' '_')"
+[ -n "$HOST_LABEL" ] || HOST_LABEL=server
+TIMESTAMP="$(date '+%Y%m%d_%H%M%S' 2>/dev/null || printf unknown_time)"
+LOG_FILE="$LOG_DIR/can_diagnostic_${HOST_LABEL}_${TIMESTAMP}_$$.log"
+
+# Open File Descriptor 3 for technical log
+if ! exec 3>>"$LOG_FILE" 2>/dev/null; then
+  LOG_FILE="${TMPDIR:-/tmp}/can_diagnostic_${HOST_LABEL}_${TIMESTAMP}_$$.log"
+  if ! exec 3>>"$LOG_FILE"; then
+    printf '[NOT OK] Could not open log file for writing: %s\n' "$LOG_FILE" >&2
+    exit 2
+  fi
+fi
+
+# Terminal colors (screen only)
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_RESET="$(printf '\033[0m')"
+  C_BOLD="$(printf '\033[1m')"
+  C_DIM="$(printf '\033[2m')"
+  C_GREEN="$(printf '\033[32m')"
+  C_YELLOW="$(printf '\033[33m')"
+  C_RED="$(printf '\033[31m')"
+  C_CYAN="$(printf '\033[36m')"
+  C_GRAY="$(printf '\033[90m')"
+else
+  C_RESET=""
+  C_BOLD=""
+  C_DIM=""
+  C_GREEN=""
+  C_YELLOW=""
+  C_RED=""
+  C_CYAN=""
+  C_GRAY=""
+fi
+
+log_tech() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$*" >&3
+}
+
+log_tech_file() {
+  _HEADER="$1"
+  _FILE="$2"
+  if [ -s "$_FILE" ]; then
+    printf '[%s] --- BEGIN %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_HEADER" >&3
+    cat "$_FILE" >&3 2>/dev/null
+    printf '[%s] --- END %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_HEADER" >&3
+  fi
+}
 
 set +e
 export LC_ALL=C
