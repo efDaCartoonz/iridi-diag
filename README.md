@@ -283,18 +283,23 @@ wget --no-check-certificate -O check_can_bus.sh https://raw.githubusercontent.co
 sh check_can_bus.sh
 ```
 
-The short diagnostic (version 2.2) shows device cards once, before bus health.
-The monitor (version 2.1) also repeats them after observation.
-Each `BUS DEVICES` card includes model, name, HWID, firmware version
-and profile. Unavailable discovery data is explicitly reported.
-The download commands replace old scripts instead of creating `.1` copies;
-check `Script version: 2.2` for the short diagnostic in the report header.
+The diagnostic script (version 2.3) performs:
+- **Bus77 Module Discovery**: Identifies all connected devices, reporting their LID, full HWID, model, device name, firmware version, profile number (Firmware ID), and channel/tag counts.
+- **CAN Subsystem Health**: Checks controller state (`ERROR-ACTIVE`), bitrate, kernel error counters (`rx_errors`, `tx_errors`, `dropped`), `iRidium Server` gateway status, and takes a 15-second live traffic sample.
 
-The report starts with the responding devices: LID, full HWID, model, device
-name, firmware version and **firmware profile number (Firmware ID)**.
-Then it reports CAN controller state, bitrate, historical errors, new errors
-and dropped frames, RX/TX activity and server gateway settings.
-The health observation lasts 15 seconds, after discovery has finished.
+#### Additional `check_can_bus.sh` modes:
+
+```sh
+# Instant device inventory without waiting for the 15-second traffic sample:
+sh check_can_bus.sh --scan-only
+
+# Export structured inventory to JSON:
+sh check_can_bus.sh --scan-only --json
+
+# Passive mode without sending active Search/DeviceInfo queries:
+sh check_can_bus.sh --passive
+```
+
 
 ### Who sends what to whom (Monitoring, Bus Load & Ping)
 

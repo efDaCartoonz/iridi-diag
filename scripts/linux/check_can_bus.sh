@@ -2,15 +2,16 @@
 
 case "${1:-}" in
   -h|--help)
-    printf 'Usage: sh %s [--interface can0|all] [--duration SECONDS] [--passive]\n' "${0##*/}"
+    printf 'Usage: sh %s [--interface can0|all] [--duration SECONDS] [--passive] [--scan-only] [--json]\n' "${0##*/}"
     printf '%s\n' 'Default: read device identities, then observe the bus. --passive skips all requests.'
+    printf '%s\n' 'Use --scan-only (or --inventory) to discover devices and exit immediately without bus sampling.'
     exit 0
     ;;
 esac
 
-# Bus77 device inventory followed by CAN health diagnostics for HSS/ProAV.
+# Bus77 device inventory and CAN health diagnostics for HSS/ProAV.
 # Only Search and Device Info requests are sent; interface settings stay unchanged.
-# Usage: sh check_can_bus.sh [--interface can0|all] [--duration 15]
+# Usage: sh check_can_bus.sh [--interface can0|all] [--duration 15] [--scan-only] [--json]
 
 if [ "${IRIDI_CAN_LOG_ACTIVE:-0}" != "1" ]; then
   CURRENT_DIRECTORY="$(pwd 2>/dev/null || printf '.')"
@@ -67,8 +68,10 @@ fi
 set +e
 export LC_ALL=C
 
-SCRIPT_VERSION=2.2
+SCRIPT_VERSION=2.3
 PASSIVE_ONLY=0
+SCAN_ONLY=0
+JSON_OUTPUT=0
 REQUESTED_INTERFACE=all
 SAMPLE_SECONDS=15
 WARNINGS=0
@@ -95,9 +98,14 @@ fail() {
 }
 
 usage() {
-  printf '%s\n' 'Usage: sh check_can_bus.sh [--interface can0|all] [--duration SECONDS]'
+  printf '%s\n' 'Usage: sh check_can_bus.sh [--interface can0|all] [--duration SECONDS] [--passive] [--scan-only] [--json]'
   printf '%s\n' 'Defaults: read-only inventory, then a 15-second health sample on all CAN interfaces.'
-  printf '%s\n' 'Use --passive to skip device requests (models and profiles will not be read).'
+  printf '%s\n' 'Options:'
+  printf '%s\n' '  --scan-only, --inventory  Discover connected Bus77 devices/profiles and exit without waiting for bus sample.'
+  printf '%s\n' '  --passive                 Skip device identity requests (models and profiles will not be read).'
+  printf '%s\n' '  --duration SECONDS        Duration of passive health sample in seconds (default: 15).'
+  printf '%s\n' '  --interface IFACE         SocketCAN interface name (e.g. can0, or all).'
+  printf '%s\n' '  --json                    Output discovered devices in structured JSON format.'
 }
 
 # BEGIN GENERATED INVENTORY
@@ -705,6 +713,8 @@ trap 'exit 130' HUP INT TERM
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --passive) PASSIVE_ONLY=1 ;;
+    --scan-only|--inventory) SCAN_ONLY=1 ;;
+    --json) JSON_OUTPUT=1 ;;
     --interface)
       [ "$#" -ge 2 ] || { printf 'RESULT: FAIL - missing interface.\n'; exit 2; }
       shift
@@ -814,6 +824,63 @@ fi
 
 separator
 show_bus_devices
+
+if [ "$JSON_OUTPUT" -eq 1 ]; then
+  separator
+  printf 'JSON INVENTORY EXPORT:\n'
+  awk -F'|' '
+    BEGIN {
+      printf "[\n"
+    }
+    NF >= 9 {
+      if (count++) printf ",\n"
+      printf "  {\n"
+      printf "    \"interface\": \"%s\",\n", $1
+      printf "    \"lid\": %d,\n", $2
+      printf "    \"can_id\": \"0x%s\",\n", $3
+      printf "    \"name\": \"%s\",\n", $4
+      printf "    \"producer\": \"%s\",\n", $5
+      printf "    \"model\": \"%s\",\n", $6
+      printf "    \"hwid\": \"%s\",\n", $7
+      printf "    \"firmware_profile\": %s,\n", ($8!=""?$8:"null")
+      printf "    \"firmware_version\": \"%s\",\n", $9
+      printf "    \"channels\": %s,\n", ($10!=""?$10:"null")
+      printf "    \"tags\": %s,\n", ($11!=""?$11:"null")
+      printf "    \"group\": %s,\n", ($12!=""?$12:"null")
+      printf "    \"device_class\": %s,\n", ($13!=""?$13:"null")
+      printf "    \"processor\": %s,\n", ($14!=""?$14:"null")
+      printf "    \"operating_system\": %s,\n", ($15!=""?$15:"null")
+      printf "    \"device_flags\": %s,\n", ($16!=""?$16:"null")
+      printf "    \"user_id\": %s\n", ($17!=""?$17:"null")
+      printf "  }"
+    }
+    END {
+      printf "\n]\n"
+    }
+  ' "$INVENTORY_FILE"
+fi
+
+if [ "$SCAN_ONLY" -eq 1 ]; then
+  separator
+  printf 'SUMMARY\n'
+  DEV_COUNT="$(wc -l <"$INVENTORY_FILE" 2>/dev/null | tr -d ' ')"
+  printf '  Interfaces: %s\n' "$(printf '%s' "$INTERFACES" | tr '\n' ' ')"
+  printf '  Mode: scan only (health observation skipped)\n'
+  printf '  Discovered devices: %s\n' "${DEV_COUNT:-0}"
+  printf '  Failures: %s\n' "$FAILURES"
+  printf '  Attention items: %s\n' "$WARNINGS"
+  if [ "$FAILURES" -gt 0 ]; then
+    printf 'RESULT: FAIL - NOT OK: device discovery failed.\n'
+    exit 2
+  elif [ "$WARNINGS" -gt 0 ]; then
+    printf 'RESULT: WARN - ATTENTION REQUIRED: discovery completed with warnings.\n'
+    exit 1
+  else
+    printf 'RESULT: PASS - OK: all discovered Bus77 devices returned complete valid profiles.\n'
+    exit 0
+  fi
+fi
+
 separator
 printf 'BUS HEALTH\n'
 printf '1. CAN interface discovery\n'
