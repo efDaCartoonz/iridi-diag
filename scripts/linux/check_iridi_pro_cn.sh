@@ -3,6 +3,18 @@
 # Standalone iRidi Pro cloud diagnostic for the CN region.
 # Usage: sh check_iridi_pro_cn.sh
 
+for arg in "$@"; do
+  case "$arg" in
+    --help|-h)
+      printf 'Usage: sh %s [options]\n\n' "$0"
+      printf 'Options:\n'
+      printf '  --quality, --deep, -q   Run extended channel quality, latency, MTU, and throughput tests\n'
+      printf '  -h, --help              Show this help message\n\n'
+      exit 0
+      ;;
+  esac
+done
+
 # Live output and automatic per-run log for POSIX sh and BusyBox.
 if [ "${IRIDI_CLOUD_LOG_ACTIVE:-0}" != "1" ]; then
   CURRENT_DIRECTORY="$(pwd 2>/dev/null || printf '.')"
@@ -65,8 +77,29 @@ export LC_ALL=C
 TOOL_VERSION=1.4
 USER_AGENT="iridi-diag/iridi-pro-cn/$TOOL_VERSION"
 
+QUALITY_MODE=0
+for arg in "$@"; do
+  case "$arg" in
+    --quality|--deep|--extended|-q)
+      QUALITY_MODE=1
+      ;;
+    --help|-h)
+      printf 'Usage: sh %s [options]\n\n' "$0"
+      printf 'Options:\n'
+      printf '  --quality, --deep, -q   Run extended channel quality, latency, MTU, and throughput tests\n'
+      printf '  -h, --help              Show this help message\n\n'
+      exit 0
+      ;;
+  esac
+done
+
 REGION="CN"
 GATE_HOST="37.27.5.98"
+QUALITY_LATENCY_URL="https://auth.eu.iridi.com/"
+QUALITY_LATENCY_LABEL="Authorization CN (Global)"
+QUALITY_THROUGHPUT_URL="http://iridi.com/"
+QUALITY_THROUGHPUT_LABEL="Update service (iridi.com)"
+QUALITY_MTU_HOST="auth.eu.iridi.com"
 MAX_ATTEMPTS=3
 RETRY_DELAY=1
 TOTAL=0
@@ -265,8 +298,214 @@ check_gate() {
   fi
 }
 
+run_quality_latency() {
+  _URL="$1"
+  _LABEL="$2"
+  printf '1. Latency & Packet Loss test (10 probes to %s):\n' "$_LABEL"
+  _SUCCESS=0
+  _TOTAL=10
+  _SUM_MS=0
+  _MIN_MS=999999
+  _MAX_MS=0
+  _DNS_SUM_MS=0
+
+  i=1
+  printf '  Probing: '
+  while [ "$i" -le "$_TOTAL" ]; do
+    if command -v curl >/dev/null 2>&1; then
+      _OUT="$(curl --insecure --silent --output /dev/null --connect-timeout 5 --max-time 8 \
+        --user-agent "$USER_AGENT" \
+        --write-out '%{http_code}|%{time_total}|%{time_namelookup}' \
+        "$_URL" 2>/dev/null)"
+      _CODE="$(printf '%s' "$_OUT" | cut -d'|' -f1)"
+      _TIME_S="$(printf '%s' "$_OUT" | cut -d'|' -f2)"
+      _DNS_S="$(printf '%s' "$_OUT" | cut -d'|' -f3)"
+      _MS="$(awk -v t="${_TIME_S:-0}" 'BEGIN { printf "%d", (t * 1000) }' 2>/dev/null || echo 0)"
+      _DNS_MS="$(awk -v t="${_DNS_S:-0}" 'BEGIN { printf "%d", (t * 1000) }' 2>/dev/null || echo 0)"
+
+      case "$_CODE" in
+        2??|3??|4??)
+          _SUCCESS=$((_SUCCESS + 1))
+          _SUM_MS=$((_SUM_MS + _MS))
+          _DNS_SUM_MS=$((_DNS_SUM_MS + _DNS_MS))
+          [ "$_MS" -lt "$_MIN_MS" ] && _MIN_MS="$_MS"
+          [ "$_MS" -gt "$_MAX_MS" ] && _MAX_MS="$_MS"
+          printf '.'
+          ;;
+        *)
+          printf 'x'
+          ;;
+      esac
+    else
+      if wget -q -O /dev/null --no-check-certificate --timeout=5 -t 1 "$_URL" 2>/dev/null; then
+        _SUCCESS=$((_SUCCESS + 1))
+        printf '.'
+      else
+        printf 'x'
+      fi
+    fi
+    i=$((i + 1))
+  done
+  printf '\n'
+
+  _LOSS=$(( ((_TOTAL - _SUCCESS) * 100) / _TOTAL ))
+  if [ "$_SUCCESS" -gt 0 ]; then
+    _AVG_MS=$((_SUM_MS / _SUCCESS))
+    _AVG_DNS_MS=$((_DNS_SUM_MS / _SUCCESS))
+    [ "$_MIN_MS" -eq 999999 ] && _MIN_MS=0
+    printf '  Requests succeeded: %s of %s (%s%% loss)\n' "$_SUCCESS" "$_TOTAL" "$_LOSS"
+    printf '  Latency (RTT):      min %sms | avg %sms | max %sms\n' "$_MIN_MS" "$_AVG_MS" "$_MAX_MS"
+    [ "$_AVG_DNS_MS" -gt 0 ] && printf '  DNS lookup time:    avg %sms\n' "$_AVG_DNS_MS"
+  else
+    printf '  Requests succeeded: 0 of %s (100%% loss)\n' "$_TOTAL"
+  fi
+
+  if [ "$_LOSS" -eq 0 ]; then
+    if [ "$_SUCCESS" -gt 0 ] && [ "$_AVG_MS" -gt 1000 ]; then
+      printf '  [ATTENTION] All requests succeeded, but average latency is high (> 1000 ms).\n'
+      WARN_COUNT=$((WARN_COUNT + 1))
+    else
+      printf '  [OK] Connection latency is stable with 0%% packet loss.\n'
+    fi
+  elif [ "$_LOSS" -le 20 ]; then
+    printf '  [ATTENTION] Minor packet/request loss detected (%s%%). Connection may experience intermittent drops.\n' "$_LOSS"
+    WARN_COUNT=$((WARN_COUNT + 1))
+  else
+    printf '  [NOT OK] High packet/request loss detected (%s%%). Connection is unstable.\n' "$_LOSS"
+    WARN_COUNT=$((WARN_COUNT + 1))
+  fi
+}
+
+run_quality_throughput() {
+  _URL="$1"
+  _LABEL="$2"
+  printf '2. Bandwidth & Download Throughput (%s):\n' "$_LABEL"
+  if command -v curl >/dev/null 2>&1; then
+    _OUT="$(curl --insecure --location --silent --output /dev/null --connect-timeout 6 --max-time 15 \
+      --user-agent "$USER_AGENT" \
+      --write-out '%{speed_download}|%{size_download}|%{time_total}' \
+      "$_URL" 2>/dev/null)"
+    _SPEED="$(printf '%s' "$_OUT" | cut -d'|' -f1)"
+    _SIZE="$(printf '%s' "$_OUT" | cut -d'|' -f2)"
+    _TIME="$(printf '%s' "$_OUT" | cut -d'|' -f3)"
+
+    _BYTES_PER_SEC="$(awk -v s="${_SPEED:-0}" 'BEGIN { printf "%d", s }' 2>/dev/null || echo 0)"
+    _KB_PER_SEC=$(( _BYTES_PER_SEC / 1024 ))
+    _DOWNLOADED_KB=$(( ${_SIZE:-0} / 1024 ))
+
+    if [ "$_BYTES_PER_SEC" -gt 0 ]; then
+      if [ "$_KB_PER_SEC" -ge 1024 ]; then
+        _MB_FMT="$(awk -v k="$_KB_PER_SEC" 'BEGIN { printf "%.2f MB/s", (k / 1024) }' 2>/dev/null || echo "${_KB_PER_SEC} KB/s")"
+        printf '  Download speed:     %s (%s KB transferred in %ss)\n' "$_MB_FMT" "$_DOWNLOADED_KB" "${_TIME:-n/a}"
+      else
+        printf '  Download speed:     %s KB/s (%s KB transferred in %ss)\n' "$_KB_PER_SEC" "$_DOWNLOADED_KB" "${_TIME:-n/a}"
+      fi
+      if [ "$_KB_PER_SEC" -lt 128 ]; then
+        printf '  [ATTENTION] Download speed is low (< 128 KB/s). Large project uploads or downloads may be slow.\n'
+        WARN_COUNT=$((WARN_COUNT + 1))
+      else
+        printf '  [OK] Download throughput is sufficient for project transfers and asset syncing.\n'
+      fi
+    else
+      printf '  [INFO] Throughput benchmark returned 0 bytes (endpoint may be redirecting or protected).\n'
+    fi
+  else
+    printf '  [INFO] curl is not available; throughput benchmark skipped.\n'
+  fi
+}
+
+run_quality_gate() {
+  _HOSTS="$1"
+  printf '3. Cloud Gate Connection Stability (burst connect & timing):\n'
+  for _GH in $_HOSTS; do
+    for _PORT in 9088 9089; do
+      printf '  Testing %s:%s (3 attempts) ... ' "$_GH" "$_PORT"
+      _G_OK=0
+      _G_TIME_SUM=0
+      for _TRY in 1 2 3; do
+        if command -v curl >/dev/null 2>&1; then
+          _C_OUT="$(curl --connect-timeout 5 --max-time 6 --silent \
+            --write-out '%{time_connect}' \
+            "http://$_GH:$_PORT/" </dev/null 2>/dev/null)"
+          _RC=$?
+          case "$_RC" in
+            0|52|56)
+              _G_OK=$((_G_OK + 1))
+              _C_MS="$(awk -v t="${_C_OUT:-0}" 'BEGIN { printf "%d", (t * 1000) }' 2>/dev/null || echo 0)"
+              _G_TIME_SUM=$((_G_TIME_SUM + _C_MS))
+              ;;
+          esac
+        elif command -v nc >/dev/null 2>&1; then
+          if nc -w 5 "$_GH" "$_PORT" </dev/null >/dev/null 2>&1; then
+            _G_OK=$((_G_OK + 1))
+          fi
+        fi
+      done
+      if [ "$_G_OK" -eq 3 ]; then
+        if [ "$_G_TIME_SUM" -gt 0 ]; then
+          _G_AVG=$((_G_TIME_SUM / 3))
+          printf '[OK] 3/3 connected (avg handshake: %sms)\n' "$_G_AVG"
+        else
+          printf '[OK] 3/3 connected successfully\n'
+        fi
+      elif [ "$_G_OK" -gt 0 ]; then
+        printf '[ATTENTION] %s of 3 connected (intermittent TCP resets or packet loss)\n' "$_G_OK"
+        WARN_COUNT=$((WARN_COUNT + 1))
+      else
+        printf '[NOT OK] 0 of 3 connected\n'
+        WARN_COUNT=$((WARN_COUNT + 1))
+      fi
+    done
+  done
+}
+
+run_quality_mtu() {
+  _TARGET_HOST="$1"
+  printf '4. Path MTU & Packet Size test (target: %s):\n' "$_TARGET_HOST"
+  if ! command -v ping >/dev/null 2>&1; then
+    printf '  [INFO] ping utility not available; MTU test skipped.\n'
+    return 0
+  fi
+
+  if ! ping -c 1 -W 2 "$_TARGET_HOST" >/dev/null 2>&1 && ! ping -c 1 "$_TARGET_HOST" >/dev/null 2>&1; then
+    printf '  [INFO] ICMP ping is filtered or unacknowledged by target host; MTU test skipped.\n'
+    return 0
+  fi
+
+  _MTU_1500=0
+  if ping -c 2 -W 2 -M do -s 1472 "$_TARGET_HOST" >/dev/null 2>&1; then
+    _MTU_1500=1
+  elif ping -c 2 -W 2 -s 1472 "$_TARGET_HOST" >/dev/null 2>&1; then
+    _MTU_1500=1
+  fi
+
+  if [ "$_MTU_1500" -eq 1 ]; then
+    printf '  [OK] Standard 1500-byte MTU packets pass without fragmentation drops.\n'
+  else
+    _MTU_1400=0
+    if ping -c 2 -W 2 -M do -s 1372 "$_TARGET_HOST" >/dev/null 2>&1; then
+      _MTU_1400=1
+    elif ping -c 2 -W 2 -s 1372 "$_TARGET_HOST" >/dev/null 2>&1; then
+      _MTU_1400=1
+    fi
+
+    if [ "$_MTU_1400" -eq 1 ]; then
+      printf '  [ATTENTION] 1500-byte packets were dropped, but 1400-byte packets passed (possible VPN/PPPoE MSS clamping issue).\n'
+      WARN_COUNT=$((WARN_COUNT + 1))
+    else
+      printf '  [ATTENTION] Large ICMP packets were dropped (network may restrict packet size or disallow large frames).\n'
+      WARN_COUNT=$((WARN_COUNT + 1))
+    fi
+  fi
+}
+
 printf 'iRidi Pro Cloud Check - region %s\n' "$REGION"
 printf 'Tool version: %s\n' "$TOOL_VERSION"
+if [ "$QUALITY_MODE" -eq 1 ]; then
+  printf 'Mode: Extended quality, latency, MTU, and stability analysis\n'
+else
+  printf 'Mode: Standard reachability pre-flight (run with --quality for extended tests)\n'
+fi
 printf 'Started: %s\n' "$(date 2>/dev/null || echo unknown)"
 printf 'Log file: %s\n' "${IRIDI_CLOUD_LOG_FILE:-not set}"
 printf 'Device: %s | %s | %s\n' "$(hostname 2>/dev/null || echo unknown)" "$(uname -s 2>/dev/null)" "$(uname -m 2>/dev/null)"
@@ -281,9 +520,19 @@ probe_resource updates-site "Update service" "http://iridi.com/" "89.169.183.139
 probe_resource updates-cn "CN update files" "http://iridium3download.oss-cn-hangzhou.aliyuncs.com/" "118.178.60.104" no
 check_gate
 
+if [ "$QUALITY_MODE" -eq 1 ]; then
+  separator
+  printf 'EXTENDED QUALITY & STABILITY ANALYSIS\n'
+  run_quality_latency "$QUALITY_LATENCY_URL" "$QUALITY_LATENCY_LABEL"
+  run_quality_throughput "$QUALITY_THROUGHPUT_URL" "$QUALITY_THROUGHPUT_LABEL"
+  run_quality_gate "$GATE_HOST"
+  run_quality_mtu "$QUALITY_MTU_HOST"
+fi
+
 separator
 printf 'SUMMARY\n'
 printf '  Profile: %s\n' "$REGION"
+printf '  Mode: %s\n' "$( [ "$QUALITY_MODE" -eq 1 ] && echo "extended quality & stability" || echo "standard reachability" )"
 printf '  HTTP resources: %s of %s available, %s failed\n' "$OK_COUNT" "$TOTAL" "$FAIL_COUNT"
 printf '  Cloud Gate: %s\n' "$GATE_STATUS"
 printf '  Warnings: %s\n' "$WARN_COUNT"
@@ -310,4 +559,7 @@ if [ "$WARN_COUNT" -gt 0 ]; then
   exit 1
 fi
 printf 'RESULT: PASS - OK: required cloud resources are available.\n'
+if [ "$QUALITY_MODE" -eq 0 ]; then
+  printf '\nTip: For deeper channel quality, latency, MTU, and throughput tests, re-run with: sh %s --quality\n' "$0"
+fi
 exit 0

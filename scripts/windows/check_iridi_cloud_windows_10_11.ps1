@@ -8,7 +8,9 @@ param(
     [string]$Product = "",
 
     [ValidateSet("RU", "EU", "CN")]
-    [string]$Region = "RU"
+    [string]$Region = "RU",
+
+    [switch]$Quality
 )
 
 function Write-Status {
@@ -51,8 +53,12 @@ if (-not $Product) {
             default {
                 Write-Host "Invalid selection. Press Enter and try again."
                 [void](Read-Host)
+                continue
             }
         }
+        Write-Host ""
+        $qualChoice = Read-Host "Run extended quality & stability analysis (latency, loss, throughput, MTU)? (y/n)"
+        if ($qualChoice -match "^[yY]") { $Quality = $true }
     }
 }
 
@@ -161,6 +167,11 @@ switch ($Product) {
     "i3knx" {
         $ProductLabel = "i3 KNX"
         $GateHosts = @("37.27.5.98", "85.192.35.27")
+        $QualityLatencyUrl = "https://auth.eu.iridi.com/"
+        $QualityLatencyLabel = "Authorization EU"
+        $QualityThroughputUrl = "https://www.iridi.com/"
+        $QualityThroughputLabel = "iRidi portal (www.iridi.com)"
+        $QualityMtuHost = "auth.eu.iridi.com"
         $Resources += New-Resource "www" "Website and downloads" "https://www.iridi.com/" "89.169.183.139"
         $Resources += New-Resource "auth-eu" "Authorization EU" "https://auth.eu.iridi.com/" "95.216.162.71"
         $Resources += New-Resource "proxy-auth-eu" "Authorization proxy EU" "https://proxy.auth.eu.iridi.com/" "72.56.78.171"
@@ -175,6 +186,11 @@ switch ($Product) {
     "bus77-home" {
         $ProductLabel = "Bus77 Home"
         $GateHosts = @("37.27.5.98", "85.192.35.27")
+        $QualityLatencyUrl = "https://auth.ru.iridi.com/"
+        $QualityLatencyLabel = "Authorization RU"
+        $QualityThroughputUrl = "https://www.iridi.com/"
+        $QualityThroughputLabel = "iRidi portal (www.iridi.com)"
+        $QualityMtuHost = "auth.ru.iridi.com"
         $Resources = Add-CommonBus77Resources `
             "bus77home.ru.iridi.com" `
             "Bus77 Home cloud" `
@@ -185,6 +201,11 @@ switch ($Product) {
     "bus77-lite" {
         $ProductLabel = "Bus77 Lite"
         $GateHosts = @("37.27.5.98", "85.192.35.27")
+        $QualityLatencyUrl = "https://auth.ru.iridi.com/"
+        $QualityLatencyLabel = "Authorization RU"
+        $QualityThroughputUrl = "https://www.iridi.com/"
+        $QualityThroughputLabel = "iRidi portal (www.iridi.com)"
+        $QualityMtuHost = "auth.ru.iridi.com"
         $Resources = Add-CommonBus77Resources `
             "bus77lite.ru.iridi.com" `
             "Bus77 Lite cloud" `
@@ -197,6 +218,11 @@ switch ($Product) {
         $ProductLabel = "iRidi Pro " + $Region
         if ($Region -eq "EU") {
             $GateHosts = @("37.27.5.98")
+            $QualityLatencyUrl = "https://auth.eu.iridi.com/"
+            $QualityLatencyLabel = "Authorization EU"
+            $QualityThroughputUrl = "http://iridi.com/"
+            $QualityThroughputLabel = "Update website (iridi.com)"
+            $QualityMtuHost = "auth.eu.iridi.com"
             $Resources += New-Resource "auth-eu" "Authorization EU" "https://auth.eu.iridi.com/" "95.216.162.71"
             $Resources += New-Resource "i3pro-eu" "i3 Pro cloud EU" "https://i3pro.eu.iridi.com/" "95.216.162.71"
             $Resources += New-Resource "storage-eu" "AWS storage EU" "https://s3.us-east-1.amazonaws.com/" "dynamic"
@@ -205,6 +231,11 @@ switch ($Product) {
             $Resources += New-Resource "updates-s3" "Update files" "http://iridium3download.s3.amazonaws.com/" "dynamic"
         } elseif ($Region -eq "CN") {
             $GateHosts = @("37.27.5.98")
+            $QualityLatencyUrl = "https://auth.eu.iridi.com/"
+            $QualityLatencyLabel = "Authorization CN (Global)"
+            $QualityThroughputUrl = "http://iridi.com/"
+            $QualityThroughputLabel = "Update website (iridi.com)"
+            $QualityMtuHost = "auth.eu.iridi.com"
             $Resources += New-Resource "auth-cn" "Authorization CN" "https://auth.eu.iridi.com/" "95.216.162.71"
             $Resources += New-Resource "i3pro-cn" "i3 Pro cloud CN" "https://i3pro.eu.iridi.com/" "95.216.162.71"
             $Resources += New-Resource "storage-cn" "Alibaba storage CN" "https://ir-endpoint.oss-cn-shanghai.aliyuncs.com/" "dynamic"
@@ -213,6 +244,11 @@ switch ($Product) {
             $Resources += New-Resource "updates-cn" "CN update files" "http://iridium3download.oss-cn-hangzhou.aliyuncs.com/" "dynamic"
         } else {
             $GateHosts = @("85.192.35.27")
+            $QualityLatencyUrl = "https://auth.ru.iridi.com/"
+            $QualityLatencyLabel = "Authorization RU"
+            $QualityThroughputUrl = "http://iridi.com/"
+            $QualityThroughputLabel = "Update website (iridi.com)"
+            $QualityMtuHost = "auth.ru.iridi.com"
             $Resources += New-Resource "auth-ru" "Authorization RU" "https://auth.ru.iridi.com/" "84.201.152.245"
             $Resources += New-Resource "i3pro-ru" "i3 Pro cloud RU" "https://i3pro.ru.iridi.com/" "84.201.152.245"
             $Resources += New-Resource "storage-ru" "Yandex storage RU" "https://storage.yandexcloud.net/" "213.180.193.243"
@@ -380,8 +416,178 @@ function Test-TcpPort {
     }
 }
 
+function Test-QualityLatency {
+    param([string]$Url, [string]$Label)
+    Write-Host ("1. Latency & Packet Loss test (10 probes to {0}):" -f $Label)
+    Write-Host -NoNewline "  Probing: "
+    $success = 0
+    $total = 10
+    $times = @()
+
+    for ($i = 1; $i -le $total; $i++) {
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        try {
+            $request = [System.Net.HttpWebRequest]::Create($Url)
+            $request.Method = "GET"
+            $request.Timeout = 5000
+            $request.UserAgent = $UserAgent
+            $response = $request.GetResponse()
+            $sw.Stop()
+            $response.Close()
+            $times += $sw.ElapsedMilliseconds
+            $success++
+            Write-Host -NoNewline "."
+        } catch [System.Net.WebException] {
+            $sw.Stop()
+            if ($_.Response -ne $null) {
+                $times += $sw.ElapsedMilliseconds
+                $success++
+                Write-Host -NoNewline "."
+                $_.Response.Close()
+            } else {
+                Write-Host -NoNewline "x"
+            }
+        } catch {
+            Write-Host -NoNewline "x"
+        }
+    }
+    Write-Host ""
+
+    $loss = [int]((($total - $success) * 100) / $total)
+    if ($success -gt 0) {
+        $measure = $times | Measure-Object -Average -Minimum -Maximum
+        Write-Host ("  Requests succeeded: {0} of {1} ({2}% loss)" -f $success, $total, $loss)
+        Write-Host ("  Latency (RTT):      min {0}ms | avg {1}ms | max {2}ms" -f $measure.Minimum, [int]$measure.Average, $measure.Maximum)
+        if ($loss -eq 0) {
+            if ($measure.Average -gt 1000) {
+                Write-Status "ATTENTION" "All requests succeeded, but average latency is high (> 1000 ms)."
+                $script:WarningCount++
+            } else {
+                Write-Status "OK" "Connection latency is stable with 0% packet loss."
+            }
+        } elseif ($loss -le 20) {
+            Write-Status "ATTENTION" ("Minor packet/request loss detected ({0}%). Connection may experience intermittent drops." -f $loss)
+            $script:WarningCount++
+        } else {
+            Write-Status "NOT OK" ("High packet/request loss detected ({0}%). Connection is unstable." -f $loss)
+            $script:WarningCount++
+        }
+    } else {
+        Write-Host ("  Requests succeeded: 0 of {0} (100% loss)" -f $total)
+        Write-Status "NOT OK" "All quality probes failed. Connection is unavailable or blocked."
+        $script:WarningCount++
+    }
+}
+
+function Test-QualityThroughput {
+    param([string]$Url, [string]$Label)
+    Write-Host ("2. Bandwidth & Download Throughput ({0}):" -f $Label)
+    try {
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $request = [System.Net.HttpWebRequest]::Create($Url)
+        $request.Method = "GET"
+        $request.Timeout = 15000
+        $request.UserAgent = $UserAgent
+        $response = $request.GetResponse()
+        $stream = $response.GetResponseStream()
+        $buffer = New-Object byte[] 65536
+        $totalBytes = 0
+        $read = 0
+        do {
+            $read = $stream.Read($buffer, 0, $buffer.Length)
+            $totalBytes += $read
+        } while ($read -gt 0)
+        $sw.Stop()
+        $stream.Close()
+        $response.Close()
+
+        $elapsedSec = [Math]::Max($sw.Elapsed.TotalSeconds, 0.001)
+        $kbPerSec = [int](($totalBytes / 1024) / $elapsedSec)
+        $downloadedKb = [int]($totalBytes / 1024)
+
+        if ($kbPerSec -ge 1024) {
+            $speedFmt = "{0:N2} MB/s" -f ($kbPerSec / 1024)
+        } else {
+            $speedFmt = "{0} KB/s" -f $kbPerSec
+        }
+        Write-Host ("  Download speed:     {0} ({1} KB transferred in {2:N2}s)" -f $speedFmt, $downloadedKb, $elapsedSec)
+        if ($kbPerSec -lt 128) {
+            Write-Status "ATTENTION" "Download speed is low (< 128 KB/s). Large project uploads or downloads may be slow."
+            $script:WarningCount++
+        } else {
+            Write-Status "OK" "Download throughput is sufficient for project transfers and asset syncing."
+        }
+    } catch {
+        Write-Host "  [INFO] Throughput benchmark endpoint timed out or returned no data."
+    }
+}
+
+function Test-QualityGate {
+    param([string[]]$GateHostList)
+    Write-Host "3. Cloud Gate Connection Stability (burst connect & timing):"
+    foreach ($gh in $GateHostList) {
+        foreach ($port in @(9088, 9089)) {
+            Write-Host -NoNewline ("  Testing {0}:{1} (3 attempts) ... " -f $gh, $port)
+            $gOk = 0
+            $gTimes = @()
+            for ($try = 1; $try -le 3; $try++) {
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                if (Test-TcpPort $gh $port) {
+                    $sw.Stop()
+                    $gOk++
+                    $gTimes += $sw.ElapsedMilliseconds
+                } else {
+                    $sw.Stop()
+                }
+            }
+            if ($gOk -eq 3) {
+                $avgHandshake = [int]($gTimes | Measure-Object -Average).Average
+                Write-Host ("[OK] 3/3 connected (avg handshake: {0}ms)" -f $avgHandshake) -ForegroundColor Green
+            } elseif ($gOk -gt 0) {
+                Write-Host ("[ATTENTION] {0} of 3 connected (intermittent TCP drops)" -f $gOk) -ForegroundColor Yellow
+                $script:WarningCount++
+            } else {
+                Write-Host "[NOT OK] 0 of 3 connected" -ForegroundColor Red
+                $script:WarningCount++
+            }
+        }
+    }
+}
+
+function Test-QualityMtu {
+    param([string]$TargetHost)
+    Write-Host ("4. Path MTU & Packet Size test (target: {0}):" -f $TargetHost)
+    try {
+        $p1 = Test-Connection -ComputerName $TargetHost -Count 1 -Quiet -ErrorAction SilentlyContinue
+        if (-not $p1) {
+            Write-Host "  [INFO] ICMP ping is filtered or unacknowledged by target host; MTU test skipped."
+            return
+        }
+        $p1500 = Test-Connection -ComputerName $TargetHost -Count 2 -BufferSize 1472 -DontFragment -Quiet -ErrorAction SilentlyContinue
+        if ($p1500) {
+            Write-Status "OK" "Standard 1500-byte MTU packets pass without fragmentation drops."
+        } else {
+            $p1400 = Test-Connection -ComputerName $TargetHost -Count 2 -BufferSize 1372 -DontFragment -Quiet -ErrorAction SilentlyContinue
+            if ($p1400) {
+                Write-Status "ATTENTION" "1500-byte packets were dropped, but 1400-byte packets passed (possible VPN/PPPoE MSS clamping issue)."
+                $script:WarningCount++
+            } else {
+                Write-Status "ATTENTION" "Large ICMP packets were dropped (network may restrict packet size or disallow large frames)."
+                $script:WarningCount++
+            }
+        }
+    } catch {
+        Write-Host "  [INFO] MTU test could not be completed; skipped."
+    }
+}
+
 Write-Host ("iRidi Cloud Check - {0}" -f $ProductLabel)
 Write-Host ("Target: Windows 10/11 / Windows PowerShell 5.1")
+if ($Quality) {
+    Write-Host "Mode: Extended quality, latency, MTU, and stability analysis"
+} else {
+    Write-Host "Mode: Standard reachability pre-flight (run with -Quality for extended tests)"
+}
 Write-Host ("Started: {0}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss zzz"))
 Write-Host ("Computer: {0}" -f $env:COMPUTERNAME)
 Write-Host ("Log file: {0}" -f $LogPath)
@@ -421,8 +627,18 @@ if ($GateOk -eq 0) {
     Write-Status "OK" ("Cloud Gate is reachable through {0} of {1} tested endpoints." -f $GateOk, $GateTotal)
 }
 
+if ($Quality) {
+    Write-Separator
+    Write-Host "EXTENDED QUALITY & STABILITY ANALYSIS"
+    Test-QualityLatency $QualityLatencyUrl $QualityLatencyLabel
+    Test-QualityThroughput $QualityThroughputUrl $QualityThroughputLabel
+    Test-QualityGate $GateHosts
+    Test-QualityMtu $QualityMtuHost
+}
+
 Write-Separator
 Write-Host ("SUMMARY {0}: HTTP checked {1}, available {2}, failed {3}, warnings {4}" -f $ProductLabel, $HttpTotal, $HttpOk, $HttpFail, $WarningCount)
+Write-Host ("Mode: {0}" -f ($(if ($Quality) { "extended quality & stability" } else { "standard reachability" })))
 if (($HttpFail -eq 0) -and (-not $GateFailed)) {
     if ($WarningCount -gt 0) {
         Write-Host "RESULT: WARN - ATTENTION REQUIRED: required services are reachable, but warnings were found." -ForegroundColor Yellow
@@ -437,6 +653,9 @@ if (($HttpFail -eq 0) -and (-not $GateFailed)) {
 }
 
 Write-Host ("Log saved: {0}" -f $LogPath)
+if (-not $Quality) {
+    Write-Host ("`nTip: For deeper channel quality, latency, MTU, and throughput tests, re-run with: powershell.exe -File {0} -Product {1} -Quality" -f $MyInvocation.MyCommand.Name, $Product)
+}
 if ($TranscriptStarted) {
     Stop-Transcript | Out-Null
 }

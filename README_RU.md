@@ -94,13 +94,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\check_iridi_cloud_wind
 Поддерживаемые параметры:
 
 ```powershell
--Product i3knx
--Product bus77-home
--Product bus77-lite
--Product iridi-pro -Region RU
--Product iridi-pro -Region EU
--Product iridi-pro -Region CN
+-Product i3knx [-Quality]
+-Product bus77-home [-Quality]
+-Product bus77-lite [-Quality]
+-Product iridi-pro -Region RU [-Quality]
+-Product iridi-pro -Region EU [-Quality]
+-Product iridi-pro -Region CN [-Quality]
 ```
+
+Параметр `-Quality` запускает расширенное тестирование задержек, потерь пакетов, MTU и скорости скачивания. В интерактивном меню запуска также предусмотрен запрос на включение расширенной проверки качества.
 
 Версия для Windows 7 использует встроенный компонент WinHTTP и принудительно включает TLS 1.2. Если операционная система не поддерживает TLS 1.2, скрипт сообщит об ошибке подключения.
 
@@ -130,13 +132,15 @@ sh check_iridi_cloud_macos.sh --product bus77-home
 Поддерживаемые параметры командной строки:
 
 ```sh
-sh check_iridi_cloud_macos.sh --product i3knx
-sh check_iridi_cloud_macos.sh --product bus77-home
-sh check_iridi_cloud_macos.sh --product bus77-lite
-sh check_iridi_cloud_macos.sh --product iridi-pro --region RU
-sh check_iridi_cloud_macos.sh --product iridi-pro --region EU
-sh check_iridi_cloud_macos.sh --product iridi-pro --region CN
+sh check_iridi_cloud_macos.sh --product i3knx [--quality]
+sh check_iridi_cloud_macos.sh --product bus77-home [--quality]
+sh check_iridi_cloud_macos.sh --product bus77-lite [--quality]
+sh check_iridi_cloud_macos.sh --product iridi-pro --region RU [--quality]
+sh check_iridi_cloud_macos.sh --product iridi-pro --region EU [--quality]
+sh check_iridi_cloud_macos.sh --product iridi-pro --region CN [--quality]
 ```
+
+Параметр `--quality` (или `-q`) запускает расширенный тест задержек, джиттера, потерь пакетов, пропускной способности, стабильности Cloud Gate и MTU. В интерактивном меню также запрашивается подтверждение на запуск расширенной проверки.
 
 Каждый запуск автоматически записывает файл лога в папку `logs/` рядом со скриптом с именем продукта и временной меткой.
 
@@ -171,6 +175,21 @@ sh check_iridi_pro_cn.sh
 ```
 
 Доступность Cloud Gate проверяется активным TCP-подключением к портам 9088 и 9089.
+
+### Расширенная диагностика качества и стабильности (`--quality` / `--deep`)
+
+Стандартный режим выполняет экспресс-проверку (15–20 секунд). Если требуется выявить периодические обрывы связи, скачки задержек или нестабильность туннелей, запустите скрипт с флагом `--quality` (или `--deep` / `-q`):
+
+```sh
+sh check_bus77_home.sh --quality
+sh check_iridi_pro_ru.sh --quality
+```
+
+В расширенном режиме выполняются 4 дополнительных теста стабильности:
+1. **Задержка, джиттер и потери пакетов**: 10 последовательных проб HTTP/HTTPS с замером min/avg/max задержки, джиттера, скорости DNS-резолвинга и процента потерь пакетов.
+2. **Пропускная способность скачивания**: реальная передача тестовых данных из регионального CDN/хранилища продукта с расчетом скорости (в КБ/с или МБ/с).
+3. **Серийная стабильность Cloud Gate (TCP Burst)**: 3 последовательных рукопожатия TCP для проверки устойчивости брокера соединений при повторных подключениях.
+4. **Path MTU и фрагментация кадров**: отправка ICMP-пакетов стандартного размера 1500 байт и туннельного размера 1400 байт с флагом Don't-Fragment (DF) для обнаружения MTU black holes (автоматически пропускается, если провайдер фильтрует ICMP).
 
 ---
 

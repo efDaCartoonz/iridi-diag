@@ -103,13 +103,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\check_iridi_cloud_wind
 Supported parameters:
 
 ```powershell
--Product i3knx
--Product bus77-home
--Product bus77-lite
--Product iridi-pro -Region RU
--Product iridi-pro -Region EU
--Product iridi-pro -Region CN
+-Product i3knx [-Quality]
+-Product bus77-home [-Quality]
+-Product bus77-lite [-Quality]
+-Product iridi-pro -Region RU [-Quality]
+-Product iridi-pro -Region EU [-Quality]
+-Product iridi-pro -Region CN [-Quality]
 ```
+
+Use `-Quality` to run extended packet loss, latency, MTU, and download throughput tests. In interactive mode, the launcher prompts whether to run extended quality analysis.
 
 The Windows 7 version uses the built-in WinHTTP component and explicitly enables
 TLS 1.2. If the operating system does not provide TLS 1.2 support, the script
@@ -142,13 +144,15 @@ sh check_iridi_cloud_macos.sh --product bus77-home
 Supported CLI parameters:
 
 ```sh
-sh check_iridi_cloud_macos.sh --product i3knx
-sh check_iridi_cloud_macos.sh --product bus77-home
-sh check_iridi_cloud_macos.sh --product bus77-lite
-sh check_iridi_cloud_macos.sh --product iridi-pro --region RU
-sh check_iridi_cloud_macos.sh --product iridi-pro --region EU
-sh check_iridi_cloud_macos.sh --product iridi-pro --region CN
+sh check_iridi_cloud_macos.sh --product i3knx [--quality]
+sh check_iridi_cloud_macos.sh --product bus77-home [--quality]
+sh check_iridi_cloud_macos.sh --product bus77-lite [--quality]
+sh check_iridi_cloud_macos.sh --product iridi-pro --region RU [--quality]
+sh check_iridi_cloud_macos.sh --product iridi-pro --region EU [--quality]
+sh check_iridi_cloud_macos.sh --product iridi-pro --region CN [--quality]
 ```
+
+Use `--quality` (or `-q`) to run extended latency, jitter, packet loss, throughput, Cloud Gate burst, and MTU tests. In interactive mode, the launcher prompts whether to run extended quality analysis.
 
 Each run automatically writes a log file under `logs/` in the same folder with product name and timestamp.
 
@@ -189,6 +193,21 @@ sh check_iridi_pro_cn.sh
 ```
 
 Cloud Gate connectivity is verified by an active TCP probe to ports 9088 and 9089.
+
+### Extended quality & stability diagnostic (`--quality` / `--deep`)
+
+Standard mode runs a quick pre-flight check (15–20 seconds). When troubleshooting intermittent drops, latency spikes, or unstable tunnels, run with `--quality` (or `--deep` / `-q`):
+
+```sh
+sh check_bus77_home.sh --quality
+sh check_iridi_pro_ru.sh --quality
+```
+
+Extended mode performs 4 additional stability tests:
+1. **Latency, Jitter & Packet Loss**: 10 sequential HTTP/HTTPS probes measuring min/avg/max latency, jitter, DNS resolution speed, and packet drop rate.
+2. **Download Throughput**: Real payload transfer test downloading test chunks from the product CDN/storage to measure effective transfer speed (in KB/s or MB/s).
+3. **Cloud Gate TCP Burst Stability**: 3 consecutive TCP handshake attempts to verify broker stability and connection reliability under repeated connections.
+4. **Path MTU & Frame Fragmentation**: Probes standard 1500-byte and VPN/tunnel-safe 1400-byte ICMP payloads with Don't-Fragment (DF) flag to detect MTU black holes (automatically skipped if ICMP is blocked upstream).
 
 ---
 
