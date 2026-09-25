@@ -296,7 +296,7 @@ Then it reports CAN controller state, bitrate, historical errors, new errors
 and dropped frames, RX/TX activity and server gateway settings.
 The health observation lasts 15 seconds, after discovery has finished.
 
-### Who sends what to whom
+### Who sends what to whom (Monitoring, Bus Load & Ping)
 
 Read the [Bus77 monitoring guide](BUS77_MONITORING_GUIDE.md) for field explanations,
 button/on-off experiments, example messages and interpretation limits.
@@ -307,38 +307,37 @@ wget --no-check-certificate -O monitor_can_bus.sh https://raw.githubusercontent.
 sh monitor_can_bus.sh
 ```
 
-The monitor first reads device identities, then listens passively for 60 seconds.
-It reassembles CAN frames into Bus77 packets and displays:
+The monitor (version 2.2) provides:
+1. **LID Conflict Detection**: Detects duplicated Logical IDs across multiple distinct physical devices.
+2. **Real-Time Traffic Decoding**: Reassembles CAN frames into Bus77 packets, resolving device models, commands, channels, tags, and variable changes.
+3. **Bus Load Calculation**: Computes average frame rate (FPS) and CAN bus bandwidth utilization % (with alerts if load exceeds 60%).
+4. **Top Talkers Breakdown**: Device activity ranking table to pinpoint flapping inputs, packet storms, or looped automation scripts.
 
 ```text
 TIME     CAN   RX/TX  SENDER -> RECEIVER | REQUEST/RESPONSE COMMAND | DETAILS
-12:34:56 can0  TX     SERVER/GW(LID 0) -> LID 2 DM-306PS | REQUEST GetChannelValue tid=42 | channel=123
-12:34:56 can0  RX     LID 2 DM-306PS [464E] -> SERVER/GW(LID 0) | RESPONSE GetChannelValue tid=42 | channel=123 value=42
+12:34:56 can0  TX     SERVER/GW(LID 70) -> ALL (broadcast) | REQUEST SetVariable tid=none | variable=316 value=32
+12:34:56 can0  RX     LID 11 FS-V-M-IL-S-IR-BIC [C6AF] -> ALL (broadcast) | REQUEST SetVariable tid=none | variable=315 value=true
 ```
 
-This is an illustrative format, not a claim that these exact commands are active
-on every bus. `RX/TX` is relative to the server, and `ALL (broadcast)` means no
-individual recipient. `S3:LID 0` identifies segment 3, local address 0;
-`SERVER/GW` denotes the local transmission path, which can forward upstream
-clients rather than originate every command. The monitor decodes supported channel, tag and variable
-IDs and values. Unknown payloads remain hex; partial messages, unsupported
-formats and CRC failures are marked explicitly. A model name is not inferred
-from an unknown device address. Channel names and engineering units are not
-inferred without the corresponding device descriptions.
-
-A route summary and bus counters follow the live stream. Requests are cyan,
-responses green and error notices red/yellow on a color-capable terminal.
-A plain-text log is saved automatically. Logs contain device identities and bus
-values; review them before sharing. Session-token and firmware-stream payloads
-are hidden.
-
-### Options and safety
+### Advanced Monitoring Options:
 
 ```sh
-sh check_can_bus.sh --interface can0 --duration 30
-sh monitor_can_bus.sh --interface can1 --duration 300
+# 1. Test responsiveness and measure round-trip latency to a specific device (Ping RTT in ms):
+sh monitor_can_bus.sh --ping 2 --count 5
+
+# 2. Filter live packet stream by Logical ID (LID):
+sh monitor_can_bus.sh --lid 11 --duration 30
+
+# 3. Filter live packet stream by command name:
+sh monitor_can_bus.sh --cmd SetVariable --duration 60
+
+# 4. Display raw CAN frames alongside decoded packets:
+sh monitor_can_bus.sh --raw --duration 15
+
+# 5. Passive mode without active preflight discovery requests:
 sh monitor_can_bus.sh --passive --duration 60
 ```
+
 
 Both tools default to all detected SocketCAN interfaces. `--duration` controls
 the observation time, not discovery. `--passive` suppresses all outgoing
