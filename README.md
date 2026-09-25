@@ -33,16 +33,16 @@ Windows PowerShell versions found on Windows 7, 10, and 11.
 
 | File | Purpose |
 | --- | --- |
+| `check_server_health.sh` | Comprehensive server overview: hardware serials, edition/firmware version, ports, thermals, RAM, and SMART |
 | `check_i3knx.sh` | Application-level checks for i3 KNX cloud resources and an active Cloud Gate session |
 | `check_bus77_home.sh` | Application-level checks for Bus77 Home cloud resources |
 | `check_bus77_lite.sh` | Application-level checks for Bus77 Lite cloud resources |
 | `check_iridi_pro_ru.sh` | iRidi Pro Cloud checks for the RU region |
 | `check_iridi_pro_eu.sh` | iRidi Pro Cloud checks for the EU region |
 | `check_iridi_pro_cn.sh` | iRidi Pro Cloud checks for the CN region |
-| `check_emmc_health.sh` | eMMC health, root write path, overlay, and kernel error diagnostics |
-| `check_can_bus.sh` | Device inventory (HWID, model, name, firmware/profile), then CAN health |
-| `monitor_can_bus.sh` | Named sender-to-receiver Bus77 messages, commands, values and route summaries |
-| `scan_bus77_devices.sh` | Read-only active Bus77 discovery with model, HWID, firmware, and channel counts |
+| `check_emmc_health.sh` | eMMC health v2.0: SMART, multi-partition, inodes, sequential throughput and 4K database latency benchmarks |
+| `check_can_bus.sh` | CAN/Bus77 diagnostics: controller health, device inventory (`--scan-only`), and JSON export |
+| `monitor_can_bus.sh` | Bus77 analyzer v2.2: real-time packet decoding, Bus Load %, Top Talkers, Ping RTT, and filters |
 
 ## Result colors and exit codes
 
@@ -355,6 +355,4 @@ or monitor at a time: discovery uses CAN ID `0xFFFE` and LID `254`, aborting if
 that identity is observed in the initial sample. Silent address conflicts cannot
 be excluded. Incomplete identity data or traffic yields an explicit warning.
 
-`scan_bus77_devices.sh` remains available as an optional inventory-only tool
-for compatibility; neither of the two main tools requires it as a separate file.
 Protocol reference: [official BUS77 SDK](https://github.com/iRidium-Mobile/BUS77-SDK).
