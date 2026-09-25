@@ -211,6 +211,28 @@ Extended mode performs 4 additional stability tests:
 
 ---
 
+## Server health and system overview
+
+A comprehensive diagnostic script for iRidi Linux hardware (HS Server, ProAV, UMC, KNX Home Server). It collects hardware serial numbers, installed server edition and firmware version, active ports, thermal sensor temperatures, CPU/RAM utilization, eMMC flash wear indicators (SMART), and network interfaces.
+
+Download and run:
+
+```sh
+cd /tmp
+wget --no-check-certificate -O check_server_health.sh https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/linux/check_server_health.sh
+sh check_server_health.sh
+```
+
+Reports collected:
+- **Hardware Identity**: Controller serial (`/oem/hal/ccinfo` or devicetree), CPU serial, hardware model, kernel and OS version, uptime, load average.
+- **iRidi Runtime & Firmware**: Server edition (Bus77 Home, iRidi Pro, ProAV), installed `opkg` package version, binary size/path, process status (PID, RAM, threads), and active listening ports (8888, 8443, 30464, 65534, etc.).
+- **Thermal & CPU Health**: SoC/CPU and GPU thermal sensors (°C), CPU core count, and frequency scaling.
+- **Memory (RAM)**: Total, used, free, available RAM, and utilization percentage.
+- **eMMC Flash Health (SMART)**: Flash chip model, wear estimation indicators (Type A/B), pre-EOL state, filesystem partition sizes and free space, and kernel I/O error checks.
+- **Network & CAN**: Ethernet IP/MAC, link speed, default gateway, DNS servers, and CAN bus controller state (`ERROR-ACTIVE` / `ERROR-PASSIVE`).
+
+---
+
 ## eMMC diagnostics
 
 Download and run the diagnostic as `root`:
