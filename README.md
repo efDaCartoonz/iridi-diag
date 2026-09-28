@@ -35,7 +35,8 @@ Windows PowerShell versions found on Windows 7, 10, and 11.
 
 | File | Purpose |
 | --- | --- |
-| `check_server_health.sh` | Comprehensive server overview (v1.1): hardware serials, edition/firmware version, ports, thermals, RAM, and SMART |
+| `check_server_health.sh` | Full 360° server audit (v2.0): hardware serials, edition/firmware, RS-485, RTC/battery, Watchdog, projects, SQLite, logs, RAM, and SMART |
+| `check_serial_ports.sh` | RS-485 / Serial port diagnostics (v1.0): framing/overrun errors (fe/oe/pe), baudrate, process locks, half-duplex settings |
 | `check_i3knx.sh` | Application-level checks for i3 KNX cloud resources and Cloud Gate session (v1.5) |
 | `check_bus77_home.sh` | Application-level checks for Bus77 Home cloud resources (v1.5) |
 | `check_bus77_lite.sh` | Application-level checks for Bus77 Lite cloud resources (v1.5) |
@@ -43,7 +44,7 @@ Windows PowerShell versions found on Windows 7, 10, and 11.
 | `check_iridi_pro_eu.sh` | iRidi Pro Cloud checks for EU region (v1.5) |
 | `check_iridi_pro_cn.sh` | iRidi Pro Cloud checks for CN region (v1.5) |
 | `check_emmc_health.sh` | eMMC health (v2.1): SMART, multi-partition, inodes, write speed and 4K database latency benchmarks |
-| `check_can_bus.sh` | CAN/Bus77 diagnostics (v2.3): controller health, device inventory (`--scan-only`), and JSON export |
+| `check_can_bus.sh` | CAN/Bus77 diagnostics (v2.4): controller health, device inventory (`--scan-only`), and JSON export |
 | `monitor_can_bus.sh` | **Bus77 Protocol Decoder & Monitor (v2.2)**: real-time packet decoding, Bus Load %, Top Talkers, Ping RTT |
 
 ---
@@ -202,9 +203,9 @@ Extended tests include:
 
 ---
 
-## Server Health & System Overview (Linux)
+## Server Health & 360° System Audit (Linux v2.0)
 
-Comprehensive health check for iRidi Linux controllers (HS Server, ProAV, UMC, KNX Home Server):
+Comprehensive diagnostic script for iRidi Linux controllers (HS Server, ProAV, UMC, KNX Home Server):
 
 ```sh
 cd /tmp
@@ -212,13 +213,31 @@ wget --no-check-certificate -O check_server_health.sh https://raw.githubusercont
 sh check_server_health.sh
 ```
 
-Reported metrics:
-- **Hardware Identity**: controller serial, processor serial, board model, kernel/OS version, uptime, and load averages.
-- **iRidi Runtime & Services**: server edition (Bus77 Home, iRidi Pro, ProAV), installed `opkg` version, process status (PID, RAM, threads), and listening ports.
-- **Thermals & CPU**: SoC/CPU temperature sensors in °C, core count, and frequencies.
-- **Memory (RAM)**: total, used, free, available (MB and %).
-- **eMMC Storage Wear (SMART)**: chip manufacturer, SLC and MLC/TLC wear %, Pre-EOL status, partition free space, and kernel storage ring buffer error scan.
-- **Network & CAN**: Ethernet (`eth0`) state, link speed, IP/MAC, gateway, DNS, and SocketCAN state.
+8 stages of comprehensive system audit:
+1. **[1/8] Hardware Identity**: controller serial, processor serial, board model, kernel/OS version, uptime, and load averages.
+2. **[2/8] Hardware Peripherals & I/O**: RS-485 / UART ports, kernel error counters (oe/fe/pe), hardware RTC (`/dev/rtc0`) and battery status, hardware Watchdog (`/dev/watchdog`), and GPIO status.
+3. **[3/8] iRidi Runtime & Services**: server edition (Bus77 Home, iRidi Pro, ProAV), process status (`iridium` PID, RAM, threads, open FDs), service restart loops (`NRestarts`), MQTT broker (port 1883), and open listening sockets.
+4. **[4/8] Projects, Licenses & SQLite Database Integrity**: license audit (`license.xml`, ServerID, panel limits), loaded projects (`.sirp` / `.rpz`), SQLite database integrity checks (`PRAGMA integrity_check;`, WAL file sizes), and server log scan for fatal exceptions.
+5. **[5/8] Thermals & CPU**: SoC/CPU temperature sensors in °C, core count, and frequencies.
+6. **[6/8] Memory (RAM) & Swap**: total, used, free, available (MB and %), and OOM risk detection.
+7. **[7/8] eMMC Storage Wear (SMART)**: chip manufacturer, SLC and MLC/TLC wear % (LifeTime A/B), Pre-EOL status, partition free space, and kernel storage ring buffer error scan.
+8. **[8/8] Network & Communication**: Ethernet (`eth0`/`eth1`) link speed/duplex, SocketCAN state (`ERROR-ACTIVE` / `ERROR-PASSIVE` / `BUS-OFF`), default gateway ping latency, and DNS servers.
+
+---
+
+## RS-485 & Serial Port Diagnostics (`check_serial_ports.sh`)
+
+Specialized diagnostic tool for serial interfaces and RS-485 bus on iRidi controllers:
+
+```sh
+cd /tmp
+wget --no-check-certificate -O check_serial_ports.sh https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/linux/check_serial_ports.sh
+sh check_serial_ports.sh
+```
+
+- Automatic discovery of physical UART devices (`/dev/ttyS*`, `/dev/ttyUSB*`, `/dev/ttyAMA*`, `/dev/ttymxc*`).
+- Kernel UART error analysis: Framing Errors (`fe`), Buffer Overruns (`oe`), Parity Errors (`pe`), Breaks (`brk`).
+- Access permissions, active baud rate settings, and active locking process checks (`fuser`).
 
 ---
 
