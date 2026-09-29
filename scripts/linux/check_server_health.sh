@@ -413,21 +413,51 @@ check_iridi_data_and_projects() {
       fi
     done
     if [ -n "$LICENSE_FILE" ]; then
-      LIC_SER_ID="$(sed -n 's/.*<ServerID>\(.*\)<\/ServerID>.*/\1/p' "$LICENSE_FILE" 2>/dev/null)"
-      LIC_PANELS="$(sed -n 's/.*<CountPanels>\(.*\)<\/CountPanels>.*/\1/p' "$LICENSE_FILE" 2>/dev/null)"
-      ok "Server License detected: ServerID=${LIC_SER_ID:-set}, Panels/Clients=${LIC_PANELS:-unlimited}."
-      log_tech "LICENSE: file=$LICENSE_FILE id=$LIC_SER_ID panels=$LIC_PANELS"
+      log_tech_file "Server License ($LICENSE_FILE)" "$LICENSE_FILE"
+      LIC_SER_ID="$(sed -n 's/.*<ServerID>[[:space:]]*\([^<]*\)[[:space:]]*<\/ServerID>.*/\1/p' "$LICENSE_FILE" 2>/dev/null)"
+      LIC_PANELS="$(sed -n 's/.*<CountPanels>[[:space:]]*\([^<]*\)[[:space:]]*<\/CountPanels>.*/\1/p' "$LICENSE_FILE" 2>/dev/null)"
+      LIC_TAGS="$(sed -n 's/.*<CountTags>[[:space:]]*\([^<]*\)[[:space:]]*<\/CountTags>.*/\1/p' "$LICENSE_FILE" 2>/dev/null)"
+      LIC_TYPE="$(sed -n 's/.*<Type>[[:space:]]*\([^<]*\)[[:space:]]*<\/Type>.*/\1/p' "$LICENSE_FILE" 2>/dev/null)"
+      LIC_ISTRIAL="$(sed -n 's/.*<IsTrial>[[:space:]]*\([^<]*\)[[:space:]]*<\/IsTrial>.*/\1/p' "$LICENSE_FILE" 2>/dev/null)"
+      LIC_EXPIRE="$(sed -n 's/.*<DateEnd>[[:space:]]*\([^<]*\)[[:space:]]*<\/DateEnd>.*/\1/p' "$LICENSE_FILE" 2>/dev/null)"
+      [ -z "$LIC_EXPIRE" ] && LIC_EXPIRE="$(sed -n 's/.*<ExpireDate>[[:space:]]*\([^<]*\)[[:space:]]*<\/ExpireDate>.*/\1/p' "$LICENSE_FILE" 2>/dev/null)"
+      [ -z "$LIC_EXPIRE" ] && LIC_EXPIRE="$(sed -n 's/.*<EndDate>[[:space:]]*\([^<]*\)[[:space:]]*<\/EndDate>.*/\1/p' "$LICENSE_FILE" 2>/dev/null)"
+      
+      LIC_KIND="Commercial"
+      if [ "$LIC_ISTRIAL" = "1" ] || [ "$LIC_ISTRIAL" = "true" ] || [ "$LIC_TYPE" = "Trial" ] || [ "$LIC_TYPE" = "trial" ] || grep -qi "trial" "$LICENSE_FILE" 2>/dev/null; then
+        LIC_KIND="Trial"
+      fi
+
+      if [ "$LIC_KIND" = "Trial" ]; then
+        if [ -n "$LIC_EXPIRE" ]; then
+          warn "Server License: TRIAL License active (Expires: $LIC_EXPIRE, ServerID=${LIC_SER_ID:-set}, Panels=${LIC_PANELS:-unlimited}${LIC_TAGS:+, Tags=$LIC_TAGS})."
+        else
+          info "Server License: TRIAL License active (ServerID=${LIC_SER_ID:-set}, Panels=${LIC_PANELS:-unlimited}${LIC_TAGS:+, Tags=$LIC_TAGS})."
+        fi
+      else
+        ok "Server License: Commercial License active (ServerID=${LIC_SER_ID:-set}, Panels=${LIC_PANELS:-unlimited}${LIC_TAGS:+, Tags=$LIC_TAGS}${LIC_EXPIRE:+, Expires=$LIC_EXPIRE})."
+      fi
+      log_tech "LICENSE: file=$LICENSE_FILE kind=$LIC_KIND id=$LIC_SER_ID panels=$LIC_PANELS tags=$LIC_TAGS expire=$LIC_EXPIRE"
     else
       info "No standalone license.xml file found (may use cloud licensing or embedded token)."
     fi
 
-    # 2. Projects Inventory
+    # 2. Projects Inventory & Active Project
     PROJECTS_DIR="$ACTIVE_DATA_DIR/Documents/Projects"
     if [ -d "$PROJECTS_DIR" ]; then
       PROJ_COUNT="$(find "$PROJECTS_DIR" -type f \( -name "*.sirp" -o -name "*.rpz" \) 2>/dev/null | wc -l | tr -d ' ')"
       if [ "$PROJ_COUNT" -gt 0 ]; then
-        ok "Loaded server projects ($PROJ_COUNT found in Documents/Projects):"
+        ok "Installed server project(s) ($PROJ_COUNT file(s) in Documents/Projects):"
         find "$PROJECTS_DIR" -type f \( -name "*.sirp" -o -name "*.rpz" \) -exec ls -lh {} + 2>/dev/null | awk '{printf "     - %s (Size: %s, Modified: %s %s)\n", $NF, $5, $6, $7}'
+        
+        # Check active project from system config if available
+        SYS_XML="$ACTIVE_DATA_DIR/Documents/system.xml"
+        [ -r "$SYS_XML" ] || SYS_XML="$ACTIVE_DATA_DIR/system.xml"
+        if [ -r "$SYS_XML" ]; then
+          ACT_PROJ="$(sed -n 's/.*<ActiveProject>[[:space:]]*\([^<]*\)[[:space:]]*<\/ActiveProject>.*/\1/p' "$SYS_XML" 2>/dev/null)"
+          [ -z "$ACT_PROJ" ] && ACT_PROJ="$(sed -n 's/.*<ProjectName>[[:space:]]*\([^<]*\)[[:space:]]*<\/ProjectName>.*/\1/p' "$SYS_XML" 2>/dev/null)"
+          [ -n "$ACT_PROJ" ] && info "Active project configured in system.xml: $ACT_PROJ"
+        fi
       else
         info "No server projects (.sirp/.rpz) found in Documents/Projects."
       fi
