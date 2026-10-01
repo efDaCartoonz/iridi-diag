@@ -12,7 +12,7 @@ Download the monitor and observe one interface for five minutes:
 
 ```sh
 cd /tmp
-wget --no-check-certificate -O monitor_can_bus.sh https://raw.githubusercontent.com/efDaCartoonz/irididiag/main/scripts/linux/monitor_can_bus.sh &&
+wget --no-check-certificate -O monitor_can_bus.sh https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/linux/monitor_can_bus.sh
 sh monitor_can_bus.sh --interface can0 --duration 300
 ```
 

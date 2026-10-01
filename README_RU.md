@@ -211,6 +211,13 @@ wget --no-check-certificate -O check_server_health.sh https://raw.githubusercont
 sh check_server_health.sh
 ```
 
+#### Дополнительные режимы:
+
+```sh
+# Экспорт сводного отчета в структурированный JSON:
+sh check_server_health.sh --json
+```
+
 8 этапов комплексного аудита:
 1. **[1/8] Идентификация оборудования**: серийный номер контроллера, серийный номер процессора, модель платы, версия ядра и ОС, аптайм и Load Average.
 2. **[2/8] Периферия и аппаратные порты**: наличие портов RS-485 / UART, счетчики ошибок кадрирования и переполнения буфера (oe/fe/pe), аппаратные часы RTC (`/dev/rtc0`) и заряд батарейки, аппаратный Watchdog (`/dev/watchdog`), статус GPIO / сухих контактов.
@@ -231,6 +238,16 @@ sh check_server_health.sh
 cd /tmp
 wget --no-check-certificate -O check_serial_ports.sh https://raw.githubusercontent.com/efDaCartoonz/iridi-diag/main/scripts/linux/check_serial_ports.sh
 sh check_serial_ports.sh
+```
+
+#### Дополнительные режимы и параметры:
+
+```sh
+# Проверка конкретного порта:
+sh check_serial_ports.sh --port /dev/ttyS1
+
+# Изменение длительности замера ошибок (в секундах, по умолчанию: 5):
+sh check_serial_ports.sh --duration 10
 ```
 
 - Автоматическое обнаружение всех физических портов UART (`/dev/ttyS*`, `/dev/ttyUSB*`, `/dev/ttyAMA*`, `/dev/ttymxc*`).
@@ -301,8 +318,11 @@ sh check_can_bus.sh
 #### Дополнительные режимы `check_can_bus.sh`:
 
 ```sh
+# Выбор конкретного интерфейса CAN (по умолчанию: all):
+sh check_can_bus.sh --interface can0
+
 # Мгновенный опрос устройств без ожидания 15-секундного замера трафика:
-sh check_can_bus.sh --scan-only
+sh check_can_bus.sh --scan-only  # или --inventory
 
 # Экспорт найденных устройств в структурированный JSON:
 sh check_can_bus.sh --scan-only --json
