@@ -35,17 +35,21 @@ Windows PowerShell versions found on Windows 7, 10, and 11.
 
 | File | Purpose |
 | --- | --- |
-| `check_server_health.sh` | Full 360° server audit (v2.0): hardware serials, edition/firmware, RS-485, RTC/battery, Watchdog, projects, SQLite, logs, RAM, and SMART |
-| `check_serial_ports.sh` | RS-485 / Serial port diagnostics (v1.0): framing/overrun errors (fe/oe/pe), baudrate, process locks, half-duplex settings |
+| `collect_support_bundle.sh` | Remote support archive: bounded log excerpts, project evidence, hardware and concurrent runtime/Ethernet observations |
+| `monitor_server_runtime.sh` | CSV process observation: CPU, RSS, threads, FDs and disk I/O |
+| `check_ethernet.sh` | Ethernet link and error/drop/carrier counter deltas |
+| `capture_network.sh` | Bounded passive PCAP capture for Wireshark |
+| `check_server_health.sh` | Full 360° server audit (v2.2): hardware serials, edition/firmware, RS-485, RTC/battery, Watchdog, projects, SQLite, logs, RAM, and SMART |
+| `check_serial_ports.sh` | RS-485 / Serial port diagnostics (v1.1): framing/overrun errors (fe/oe/pe), baudrate, process locks, half-duplex settings |
 | `check_i3knx.sh` | Application-level checks for i3 KNX cloud resources and Cloud Gate session (v1.5) |
 | `check_bus77_home.sh` | Application-level checks for Bus77 Home cloud resources (v1.5) |
 | `check_bus77_lite.sh` | Application-level checks for Bus77 Lite cloud resources (v1.5) |
 | `check_iridi_pro_ru.sh` | iRidi Pro Cloud checks for RU region (v1.5) |
 | `check_iridi_pro_eu.sh` | iRidi Pro Cloud checks for EU region (v1.5) |
 | `check_iridi_pro_cn.sh` | iRidi Pro Cloud checks for CN region (v1.5) |
-| `check_emmc_health.sh` | eMMC health (v2.1): SMART, multi-partition, inodes, write speed and 4K database latency benchmarks |
+| `check_emmc_health.sh` | eMMC health (v2.2): SMART, multi-partition, inodes, write speed and 4K database latency benchmarks |
 | `check_can_bus.sh` | CAN/Bus77 diagnostics (v2.4): controller health, device inventory (`--scan-only`), and JSON export |
-| `monitor_can_bus.sh` | **Bus77 Protocol Decoder & Monitor (v2.2)**: real-time packet decoding, Bus Load %, Top Talkers, Ping RTT |
+| `monitor_can_bus.sh` | **Bus77 Protocol Decoder & Monitor (v2.3)**: real-time packet decoding, Bus Load %, Top Talkers, Ping RTT |
 
 ---
 
@@ -203,7 +207,49 @@ Extended tests include:
 
 ---
 
-## Server Health & 360° System Audit (Linux v2.0)
+## Remote diagnostics over SSH
+
+These standalone Linux/POSIX `sh` tools run on BusyBox HSS firmware. Keep the four files together for the complete bundle; the collector still produces a partial bundle with WARN if its optional runtime/Ethernet siblings are missing. They do not install packages or restart services. Each run creates a private `0700` directory under `/tmp` (or an existing `--output-dir`), with a dashboard on stdout and timestamped `audit.log` on FD 3. Output contains no ANSI escapes; `NO_COLOR=1` is supported. Exit codes: 0 PASS, 1 WARN, 2 FAIL.
+
+| Tool | Purpose | Defaults |
+| --- | --- | --- |
+| `collect_support_bundle.sh` | Bounded, heuristically masked server log excerpts, project evidence, RTC/eMMC/HAL snapshot, concurrent runtime/Ethernet observations, verified tar.gz | 15s observation; 3 logs × 128 KiB tails; 16 MiB payload budget |
+| `monitor_server_runtime.sh` | Process CPU, RSS, threads, open FDs and disk I/O counters in CSV; detects exit/PID reuse | `iridium`, 60s, interval 5s |
+| `check_ethernet.sh` | Link state, speed/duplex and error/drop/carrier counter deltas, optional ethtool details | Physical wired interfaces, 10s |
+| `capture_network.sh` | Passive bounded tcpdump capture for Wireshark; validates retained PCAP | eth0, 30s, one rotating 8 decimal MB file, snaplen 128, 100000 packets |
+
+```sh
+cd scripts/linux
+sh collect_support_bundle.sh --duration 30
+sh monitor_server_runtime.sh --duration 300 --interval 5
+sh check_ethernet.sh --interface eth0 --duration 30
+sh capture_network.sh --interface eth0 --host 192.168.1.50 --port 502 --duration 30 --max-mb 8
+```
+
+All tools accept `--output-dir DIR` and `--help`. Additional options:
+
+- Collector: `--data-dir DIR`, `--log-count 0..10`, `--log-kib 1..1024`, `--max-mb 4..128` (payload budget), `--duration 1..300`.
+- Runtime: `--pid PID`, `--duration 1..3600`, `--interval 1..300`. `CPU ALL%` is the controller's total busy CPU (0–100%); the `CPU0%`, `CPU1%`, … columns report each core (0–100%). `PROC TOTAL%` is the selected process as a share of all CPU time; `PROC 1C%` retains the one-core scale and can exceed 100%. Busy CPU excludes idle and iowait; guest time is not counted twice. Values are interval averages, with `n/a` on the first CPU sample or a counter reset/topology change.
+  `RAM PROC%` is process RSS / MemTotal; `RAM ALL%` is (MemTotal − MemAvailable) / MemTotal, accounting for reclaimable cache. RSS includes shared pages, and process RAM is already part of system usage. Missing MemAvailable is reported as `n/a`, not inferred from MemFree. All CPU/core and RAM percentages appear as columns in one row per sample, and are also included in CSV and the technical log. RSS/FD growth alone is not a leak diagnosis. Unavailable fields are `n/a`.
+- Ethernet: `--interface IFACE|all`, `--duration 1..300`. Counter reset/wrap, new errors/drops, half duplex and link changes are warnings. PASS covers observed link counters, not application connectivity.
+- Capture: `--interface IFACE|any`, `--duration 1..3600`, `--max-mb 1..128`, `--snaplen 64..65535`, `--count 1..1000000`, `--host IP`, `--port 1..65535`, or `--filter 'BPF'`. Custom BPF cannot be combined with host/port. Default BPF excludes TCP port 22; custom BPF replaces it. One rotating PCAP keeps the latest traffic and can exceed its size threshold by one packet. No matching traffic is WARN; rejected filters, capture failures or unreadable PCAP are FAIL. `tcpdump` is required; promiscuous mode is not enabled.
+
+The bundle finds `Logs/*.txt`, `Logs/*.log`, and `Documents/Logs` equivalents. It includes only selected XML project fields and process/startup evidence, not full configs, license files, project contents or databases. A configured project is not labelled as independently verified running. Packet capture is separate and is not started by the collector. Credential-like text lines are masked heuristically; logs and PCAP still require review before sharing. The payload budget covers collected text, not all temporary working files; temporary tar creation also needs free space. Packaging uses separate `tar` and `gzip` commands for HSS builds without `tar -z`.
+
+For a session that must survive SSH disconnection:
+
+```sh
+run_dir=$(mktemp -d /tmp/iridi-session.XXXXXX)
+nohup sh collect_support_bundle.sh --duration 60 --output-dir "$run_dir" >"$run_dir/progress.log" 2>&1 </dev/null &
+```
+
+The final output gives the archive path. Download that specific file (older HSS SSH servers may require legacy SCP):
+
+```sh
+scp -O root@HOST:/tmp/iridi-support-bundle.XXXXXX/support-bundle.tar.gz .
+```
+
+## Server Health & 360° System Audit (Linux v2.2)
 
 Comprehensive diagnostic script for iRidi Linux controllers (HS Server, ProAV, UMC, KNX Home Server):
 
@@ -219,6 +265,10 @@ sh check_server_health.sh
 # Export audit summary in structured JSON format:
 sh check_server_health.sh --json
 ```
+
+Firmware identity includes `/timestamp` and a separate `BUILD_ID` from `os-release` when available. The RTC check reports the chip model, compares RTC with system UTC (60-second tolerance), and reports an unavailable battery flag as unknown. Agreement between clocks does not verify battery retention or external time accuracy; no clock settings are changed.
+
+With `--json`, stdout contains only the summary object (`status`, `exit_code`, warning/failure counts, identity, firmware, discovered data/log paths, RTC and audit log path); the dashboard and technical details go to the audit log.
 
 8 stages of comprehensive system audit:
 1. **[1/8] Hardware Identity**: controller serial, processor serial, board model, kernel/OS version, uptime, and load averages.
@@ -253,6 +303,8 @@ sh check_serial_ports.sh --duration 10
 ```
 
 - Automatic discovery of physical UART devices (`/dev/ttyS*`, `/dev/ttyUSB*`, `/dev/ttyAMA*`, `/dev/ttymxc*`).
+- HAL assignments from `/oem/hal/*_port` identify RS-485, RS-232 and KNX. Symlinks are resolved without reading UART data; aliases are deduplicated. A regular HAL text file containing a `/dev/...` path is also supported.
+- The port report checks settings and available counters; it does not prove successful data exchange.
 - Kernel UART error analysis: Framing Errors (`fe`), Buffer Overruns (`oe`), Parity Errors (`pe`), Breaks (`brk`).
 - Access permissions, active baud rate settings, and active locking process checks (`fuser`).
 
@@ -269,6 +321,7 @@ sh check_emmc_health.sh
 ```
 
 - **Hardware SMART Wear**: manufacturer, manufacturing date, `LIFE_TIME_ESTIMATION` (Type A/B with 10% steps), `PRE_EOL_INFO` status, write-protect flags (`USER_WP`).
+- **eMMC bus details**: actual clock, width and timing from the selected MMC host's debugfs `ios`, plus CID/CSD and MMC boot messages in the technical log. Missing debugfs is reported without mounting it. Missing or unsupported wear indicators do not produce a healthy-wear verdict.
 - **Partition & Inode Health**: read-write status, free disk space, and inode exhaustion (`df -i`) across `/`, `/userdata`, and `/oem`.
 - **Kernel Storage Error Logs**: deep scan for I/O and EXT4 filesystem errors in `dmesg` and `/var/log/messages`.
 - **Multi-Partition Write Integrity**: safe 1 MiB write, cache flush (`sync`), double-read, and CRC32 verification on `/` and `/userdata`.
@@ -337,7 +390,7 @@ sh check_can_bus.sh --passive
 
 ### 2. Bus77 Protocol Decoder & Live Monitor (`monitor_can_bus.sh`)
 
-Standalone protocol analyzer (v2.2) that decodes raw 8-byte CAN frames into meaningful Bus77 automation events in real time.
+Standalone protocol analyzer (v2.3) that decodes raw 8-byte CAN frames into meaningful Bus77 automation events in real time.
 
 ```sh
 cd /tmp
@@ -387,3 +440,15 @@ sh monitor_can_bus.sh --passive --duration 60
 ```
 
 For detailed protocol explanations and troubleshooting walkthroughs, refer to the [Bus77 Monitoring Guide](BUS77_MONITORING_GUIDE.md).
+
+## Hardware diagnostic regression checks
+
+```sh
+python3 -m unittest discover -s tests -v
+```
+
+Offline fixtures cover RTC unknown/low battery and UTC offsets, firmware metadata, HAL symlinks and non-regular entries, eMMC host selection, JSON escaping, Bus77 CRC and typed values. Bus77 time decoding follows the SDK's optional date/time words, including date-only and time-only values. Type 13 remains reserved/unsupported; 64-bit values retain raw bytes to avoid precision loss. Top Talkers counts decoded Bus77 packets; CAN frame rate and estimated bus load are separate metrics. LID conflicts and `var_id` collisions are different findings; this monitor does not claim to detect `var_id` collisions.
+
+For live verification, run eMMC with `--no-write` and CAN monitoring with `--passive`. Read-only eMMC PASS applies only to the checks performed; write integrity and performance remain untested.
+
+Remote-tool integration fixtures also cover process exit and interruption, Ethernet errors/counter resets, partial and complete bundles, tar without `-z`, credential masking, BPF argument handling, empty captures and PCAP validation.

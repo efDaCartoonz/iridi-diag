@@ -186,3 +186,5 @@ This guide does not replay or send control commands. No server or device setting
 need to be changed to collect a normal monitoring log.
 
 See also: [tool instructions and safety notes](README.md#canbus77-diagnostics-on-hss-and-proav).
+
+Top Talkers also counts decoded Bus77 packets. Its percentages use the total decoded packet count; CAN frame rate and estimated bus utilization are separate metrics. `TIME(...)` values can contain a date, a time, or both, according to SDK flags. LID conflicts are separate from `var_id` collisions; this monitor does not detect the latter.

@@ -18,7 +18,7 @@ case "${1:-}" in
     ;;
 esac
 
-TOOL_VERSION="2.1"
+TOOL_VERSION="2.2"
 WRITE_TEST=yes
 [ "${1:-}" = "--no-write" ] && WRITE_TEST=no
 
@@ -71,7 +71,7 @@ log_tech() {
 log_tech_file() {
   _HEADER="$1"
   _FILE="$2"
-  if [ -s "$_FILE" ]; then
+  if [ -r "$_FILE" ]; then
     printf '[%s] --- BEGIN %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_HEADER" >&3
     cat "$_FILE" >&3 2>/dev/null
     printf '[%s] --- END %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_HEADER" >&3
@@ -208,9 +208,27 @@ check_emmc_smart() {
     MMC_DATE="$(read_field "$MMC_DEVICE/date")"
     MMC_SERIAL="$(read_field "$MMC_DEVICE/serial")"
     MMC_LIFE="$(read_field "$MMC_DEVICE/life_time")"
-    MMC_LIFE_A="$(printf '%s' "$MMC_LIFE" | awk '{print $1}')"
-    MMC_LIFE_B="$(printf '%s' "$MMC_LIFE" | awk '{print $2}')"
-    MMC_PRE_EOL="$(read_field "$MMC_DEVICE/pre_eol_info")"
+    MMC_LIFE_A="$(normalize_hex "$(printf '%s' "$MMC_LIFE" | awk '{print $1}')")"
+    MMC_LIFE_B="$(normalize_hex "$(printf '%s' "$MMC_LIFE" | awk '{print $2}')")"
+    MMC_PRE_EOL="$(normalize_hex "$(read_field "$MMC_DEVICE/pre_eol_info")")"
+
+    # Derive the host from the actual eMMC node; mmc0 is not always eMMC.
+    MMC_HOST="${MMC_DEVICE##*/}"
+    MMC_HOST="${MMC_HOST%%:*}"
+    MMC_IOS="/sys/kernel/debug/$MMC_HOST/ios"
+    if [ -r "$MMC_IOS" ]; then
+      MMC_CLOCK="$(awk -F: '/^actual clock:/{gsub(/^[ \t]+/, "", $2); print $2; exit}' "$MMC_IOS")"
+      MMC_TIMING="$(awk -F: '/^timing spec:/{gsub(/^[ \t]+/, "", $2); print $2; exit}' "$MMC_IOS")"
+      MMC_WIDTH="$(awk -F: '/^bus width:/{gsub(/^[ \t]+/, "", $2); print $2; exit}' "$MMC_IOS")"
+      printf '  [INFO]      eMMC bus (%s): clock %s; width %s; timing %s\n' "$MMC_HOST" "${MMC_CLOCK:-not reported}" "${MMC_WIDTH:-not reported}" "${MMC_TIMING:-not reported}"
+      log_tech_file "EMMC HOST IOS ($MMC_HOST)" "$MMC_IOS"
+    else
+      printf '  [INFO]      eMMC bus parameters unavailable (debugfs not mounted or access restricted)\n'
+      log_tech "EMMC HOST IOS: $MMC_IOS unavailable; debugfs was not mounted by this script"
+    fi
+    log_tech_file "EMMC CID" "$MMC_DEVICE/cid"
+    log_tech_file "EMMC CSD" "$MMC_DEVICE/csd"
+    log_tech_cmd "MMC BOOT MESSAGES" sh -c 'dmesg 2>/dev/null | grep -i mmc'
 
     log_tech "EMMC RAW: dev=$MMC_DEVICE node=$MMC_NODE name=$MMC_NAME manfid=$MMC_MANFID life='$MMC_LIFE' pre_eol=$MMC_PRE_EOL"
 
@@ -224,6 +242,9 @@ check_emmc_smart() {
     elif [ "$MMC_PRE_EOL" = "0x02" ] || [ "$MMC_LIFE_A" = "0x0a" ] || [ "$MMC_LIFE_B" = "0x0a" ] || [ "$MMC_LIFE_A" = "0x09" ] || [ "$MMC_LIFE_B" = "0x09" ]; then
       printf '  %s[ATTENTION]%s Device: %s (%s) — ELEVATED WEAR: A (SLC): %s, B (User): %s\n' \
         "$C_YELLOW" "$C_RESET" "${MMC_NAME:-eMMC}" "$MANF_NAME" "$DESC_A" "$DESC_B"
+      WARNINGS=$((WARNINGS + 1))
+    elif [ "$DESC_A" = "n/a" ] || [ "$DESC_B" = "n/a" ] || [ "$MMC_LIFE_A" = "0x00" ] || [ "$MMC_LIFE_B" = "0x00" ] || [ "$MMC_PRE_EOL" != "0x01" ]; then
+      printf '  %s[ATTENTION]%s Device: %s — Wear status unknown or incomplete (A=%s, B=%s, Pre-EOL=%s)\n' "$C_YELLOW" "$C_RESET" "${MMC_NAME:-eMMC}" "$MMC_LIFE_A" "$MMC_LIFE_B" "$MMC_PRE_EOL"
       WARNINGS=$((WARNINGS + 1))
     else
       printf '  %s[OK]%s        Device: %s (%s) — Wear: %s (Health: Normal)\n' \
@@ -242,7 +263,9 @@ check_emmc_smart() {
     # Read EXT_CSD if mmc-utils is available
     if command -v mmc >/dev/null 2>&1 && [ -b "$MMC_NODE" ]; then
       EXT_CSD="$(mmc extcsd read "$MMC_NODE" 2>&1)"
-      log_tech_file "EXT_CSD DUMP ($MMC_NODE)" "$EXT_CSD"
+      log_tech "--- BEGIN EXT_CSD DUMP ($MMC_NODE) ---"
+      printf '%s\n' "$EXT_CSD" >&3
+      log_tech "--- END EXT_CSD DUMP ---"
     fi
   fi
 }
@@ -254,7 +277,7 @@ check_partitions() {
   for TARGET_DIR in / /userdata /oem; do
     [ -d "$TARGET_DIR" ] || continue
     
-    MNT_LINE="$(awk -v dir="$TARGET_DIR" '$2==dir {print $1,$3,$4; exit}' /proc/mounts 2>/dev/null)"
+    MNT_LINE="$(awk -v dir="$TARGET_DIR" '$2==dir {line=$1 " " $3 " " $4} END {print line}' /proc/mounts 2>/dev/null)"
     MNT_DEV="$(echo "$MNT_LINE" | awk '{print $1}')"
     MNT_FS="$(echo "$MNT_LINE" | awk '{print $2}')"
     MNT_OPT="$(echo "$MNT_LINE" | awk '{print $3}')"
@@ -447,7 +470,11 @@ print_summary() {
     log_tech "RESULT: WARN"
     exit 1
   else
-    printf '\n%sRESULT: PASS — eMMC storage is healthy with low wear level (0 failures, 0 warnings)%s\n' "$C_GREEN" "$C_RESET"
+    if [ "$WRITE_TEST" = "no" ]; then
+      printf '\n%sRESULT: PASS — Read-only storage checks passed; write integrity and performance were not tested%s\n' "$C_GREEN" "$C_RESET"
+    else
+      printf '\n%sRESULT: PASS — eMMC storage is healthy with low wear level (0 failures, 0 warnings)%s\n' "$C_GREEN" "$C_RESET"
+    fi
     printf 'Detailed technical log: %s\n\n' "$LOG_FILE"
     log_tech "RESULT: PASS"
     exit 0

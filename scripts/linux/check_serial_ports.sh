@@ -24,7 +24,7 @@ case "${1:-}" in
     ;;
 esac
 
-TOOL_VERSION="1.0"
+TOOL_VERSION="1.1"
 REQUESTED_PORT="all"
 SAMPLE_SECONDS=5
 WARNINGS=0
@@ -80,7 +80,7 @@ log_tech() {
 log_tech_file() {
   _HEADER="$1"
   _FILE="$2"
-  if [ -s "$_FILE" ]; then
+  if [ -r "$_FILE" ]; then
     printf '[%s] --- BEGIN %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_HEADER" >&3
     cat "$_FILE" >&3 2>/dev/null
     printf '[%s] --- END %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_HEADER" >&3
@@ -94,6 +94,55 @@ log_tech_cmd() {
   "$@" >&3 2>&1 || true
   printf '[%s] --- END CMD: %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_LABEL" >&3
 }
+
+# Keep these helpers identical in both standalone diagnostic scripts.
+hal_serial_port() (
+  # HAL entries may be symlinks to live UARTs: never cat a character device.
+  if [ -L "$1" ]; then
+    readlink -f "$1" 2>/dev/null
+  elif [ -f "$1" ] && [ -r "$1" ]; then
+    tr -d '\r\n' <"$1"
+  fi
+)
+serial_port_roles() (
+  role_target="$(readlink -f "$1" 2>/dev/null || printf '%s' "$1")"
+  for role_file in /oem/hal/*_port; do
+    role_port="$(hal_serial_port "$role_file")"
+    case "$role_port" in /dev/*) ;; *) continue ;; esac
+    [ -e "$role_port" ] || continue
+    role_real="$(readlink -f "$role_port" 2>/dev/null || printf '%s' "$role_port")"
+    [ "$role_real" = "$role_target" ] || continue
+    case "${role_file##*/}" in
+      485_port) role_name="RS-485" ;;
+      232_port) role_name="RS-232" ;;
+      knx_port) role_name="KNX" ;;
+      *) role_name="${role_file##*/}" ;;
+    esac
+    printf '%s (%s)\n' "$role_name" "$role_port"
+  done
+)
+
+detect_serial_ports() (
+  serial_seen=" "
+  # HAL mappings may reference tty devices outside the usual UART name patterns.
+  serial_hal="$(for serial_file in /oem/hal/*_port; do
+    serial_value="$(hal_serial_port "$serial_file")"
+    if [ "${serial_value#/dev/}" != "$serial_value" ]; then
+      printf '%s\n' "$serial_value"
+    fi
+  done)"
+  for serial_port in /dev/ttyS* /dev/ttyUSB* /dev/ttyAMA* /dev/ttymxc* /dev/ttyAP* $serial_hal; do
+    [ -c "$serial_port" ] || continue
+    serial_real="$(readlink -f "$serial_port" 2>/dev/null || printf '%s' "$serial_port")"
+    case "$serial_real" in
+      /dev/ttyS[2-9]|/dev/ttyS[1-9][0-9])
+        [ -d "/sys/class/tty/${serial_real##*/}/device" ] || continue ;;
+    esac
+    case "$serial_seen" in *" $serial_real "*) continue ;; esac
+    serial_seen="$serial_seen$serial_real "
+    printf '%s\n' "$serial_real"
+  done
+)
 
 set +e
 export LC_ALL=C
@@ -163,19 +212,12 @@ printf '%s----------------------------------------------------------------------
 # Discover serial ports
 detect_ports() {
   if [ "$REQUESTED_PORT" != "all" ]; then
-    printf '%s\n' "$REQUESTED_PORT"
+    [ -c "$REQUESTED_PORT" ] || return
+    readlink -f "$REQUESTED_PORT" 2>/dev/null || printf '%s\n' "$REQUESTED_PORT"
     return
   fi
 
-  for PORT in /dev/ttyS* /dev/ttyUSB* /dev/ttyAMA* /dev/ttymxc* /dev/ttyAP*; do
-    [ -e "$PORT" ] || continue
-    case "$PORT" in
-      /dev/ttyS[2-9]|/dev/ttyS[1-9][0-9])
-        [ -d "/sys/class/tty/${PORT##*/}/device" ] || continue
-        ;;
-    esac
-    printf '%s\n' "$PORT"
-  done
+  detect_serial_ports
 }
 
 TARGET_PORTS="$(detect_ports)"
@@ -189,6 +231,7 @@ fi
 
 printf '\n%s[1/3] Discovered Serial & RS-485 Interfaces%s\n' "$C_BOLD" "$C_RESET"
 for PORT in $TARGET_PORTS; do
+  PORT="$(readlink -f "$PORT" 2>/dev/null || printf '%s' "$PORT")"
   PORT_NAME="${PORT##*/}"
   SYS_PATH="/sys/class/tty/$PORT_NAME"
   DRIVER_NAME="unknown"
@@ -206,6 +249,9 @@ for PORT in $TARGET_PORTS; do
 
   ok "$PORT: $TYPE_DESC (Driver: $DRIVER_NAME)"
   
+  PORT_ROLES="$(serial_port_roles "$PORT")"
+  [ -z "$PORT_ROLES" ] || info "HAL assignment: $PORT_ROLES"
+
   # Check permissions
   if [ -r "$PORT" ] && [ -w "$PORT" ]; then
     printf '     - Permissions: Read/Write OK\n'
@@ -216,13 +262,14 @@ for PORT in $TARGET_PORTS; do
   # Check active locking processes
   LOCK_PID=""
   if command -v fuser >/dev/null 2>&1; then
-    LOCK_PID="$(fuser "$PORT" 2>/dev/null | tr -d ' ')"
+    LOCK_PID="$(fuser "$PORT" 2>/dev/null | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  else
+    info "$PORT: open-process detection unavailable (fuser not installed)."
   fi
   if [ -n "$LOCK_PID" ]; then
-    LOCK_CMD="$(ps -p "$LOCK_PID" -o comm= 2>/dev/null || printf 'process')"
-    info "$PORT is currently locked by PID $LOCK_PID ($LOCK_CMD)."
-  else
-    info "$PORT is currently free (no active lock)."
+    info "$PORT is open by PID(s): $LOCK_PID (open descriptors do not prove an exclusive lock)."
+  elif command -v fuser >/dev/null 2>&1; then
+    info "$PORT: no open descriptors reported by fuser."
   fi
 done
 
@@ -236,7 +283,7 @@ if [ -r /proc/tty/driver/serial ]; then
       [0-9]*)
         DEV_NODE="/dev/ttyS$PORT_NUM"
         # Check if this dev is in target list
-        if printf '%s\n' "$TARGET_PORTS" | grep -q "$DEV_NODE"; then
+        if printf '%s\n' "$TARGET_PORTS" | grep -Fxq "$DEV_NODE"; then
           OE="$(printf '%s' "$LINE" | sed -n 's/.*oe:\([0-9]*\).*/\1/p')"
           FE="$(printf '%s' "$LINE" | sed -n 's/.*fe:\([0-9]*\).*/\1/p')"
           PE="$(printf '%s' "$LINE" | sed -n 's/.*pe:\([0-9]*\).*/\1/p')"
@@ -262,7 +309,10 @@ printf '\n%s[3/3] Port Settings & RS-485 Parameters%s\n' "$C_BOLD" "$C_RESET"
 for PORT in $TARGET_PORTS; do
   if command -v stty >/dev/null 2>&1; then
     SPEED="$(stty -F "$PORT" speed 2>/dev/null || printf 'unknown')"
-    ok "$PORT: Active Baudrate = $SPEED bps."
+    case "$SPEED" in
+      ''|*[!0-9]*) warn "$PORT: baudrate could not be read (busy or unsupported device)." ;;
+      *) ok "$PORT: Configured Baudrate = $SPEED bps (data exchange not tested)." ;;
+    esac
     log_tech_cmd "stty settings for $PORT" stty -F "$PORT" -a
   fi
 done
@@ -283,7 +333,7 @@ elif [ "$WARNINGS" -gt 0 ]; then
   printf '  %sRESULT: WARN - Serial ports active with warnings.%s\n' "$C_YELLOW$C_BOLD" "$C_RESET"
   FINAL_RC=1
 else
-  printf '  %sRESULT: PASS - All serial / RS-485 interfaces are operational.%s\n' "$C_GREEN$C_BOLD" "$C_RESET"
+  printf '  %sRESULT: PASS - Available serial settings and counters checked; data exchange not tested.%s\n' "$C_GREEN$C_BOLD" "$C_RESET"
   FINAL_RC=0
 fi
 printf '%s================================================================================%s\n' "$C_BOLD" "$C_RESET"

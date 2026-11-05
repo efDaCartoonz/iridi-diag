@@ -80,7 +80,7 @@ log_tech_file() {
 set +e
 export LC_ALL=C
 
-SCRIPT_VERSION=2.2
+SCRIPT_VERSION=2.3
 PASSIVE_ONLY=0
 REQUESTED_INTERFACE=all
 MONITOR_SECONDS=60
@@ -95,22 +95,27 @@ FAILURES=0
 WORK_DIR=""
 CAPTURE_PID=""
 
+log_tech "START: version=$SCRIPT_VERSION host=$HOST_LABEL kernel=$(uname -r 2>/dev/null) arguments=$*"
+
 separator() {
   printf '%s\n' '----------------------------------------------------------------'
 }
 
 ok() {
   printf '  [OK] %s\n' "$1"
+  log_tech "OK: $1"
 }
 
 warn() {
   WARNINGS=$((WARNINGS + 1))
   printf '  [ATTENTION] %s\n' "$1"
+  log_tech "ATTENTION: $1"
 }
 
 fail() {
   FAILURES=$((FAILURES + 1))
   printf '  [NOT OK] %s\n' "$1"
+  log_tech "FAIL: $1"
 }
 
 usage() {
@@ -499,12 +504,31 @@ function label(dev,addr,can,local, k,s) {
     if(can!="") s=s " [" can "]"
     return s
 }
-function value(p,end, t,present,size,n,exponent,mantissa,i,s) {
+function value(p,end, t,present,size,n,exponent,mantissa,i,s,flags,word) {
     value_end=p; value_ok=0
     if(p>=end)return "<missing value>"
     t=bytes[p]%128;present=bit(bytes[p++],7);value_end=p
     if(t==0){value_ok=1;return "NONE"}
     if(t==1){value_ok=1;return present?"true":"false"}
+    # SDK COutBuffer::AddTime: date/time words are independently optional.
+    # Type 13 (IVT_POINTER) is reserved/unused in the SDK, not a wire pointer.
+    if(t==14){
+        if(!present){value_ok=1;return "TIME(empty)"}
+        if(p+4>end)return "<truncated time>"
+        flags=bytes[p]%4;s=""
+        if(!flags)return "<invalid time flags>"
+        if(flags%2){
+            word=uint(p,4);p+=4
+            s=sprintf("%04d-%02d-%02d",int(word/4)%16384,int(word/65536)%16,int(word/1048576)%32)
+        }
+        if(int(flags/2)){
+            if(p+4>end)return "<truncated time>"
+            word=uint(p,4);p+=4
+            if(s!="")s=s " "
+            s=s sprintf("%02d:%02d:%02d.%03d",int(word/4)%32,int(word/128)%64,int(word/8192)%64,int(word/524288)%1024)
+        }
+        value_end=p;value_ok=1;return "TIME(" s ")"
+    }
     if(t==2||t==3)size=1
     else if(t==4||t==5)size=2
     else if(t==6||t==7||t==8)size=4
@@ -933,13 +957,14 @@ printf 'iRidi CAN/Bus77 Live Monitor & Bus Analyzer\n'
 printf 'Script version: %s\n' "$SCRIPT_VERSION"
 printf 'Started: %s\n' "$(date 2>/dev/null || echo unknown)"
 printf 'Device: %s | %s | %s\n' "$(hostname 2>/dev/null || echo unknown)" "$(uname -s 2>/dev/null)" "$(uname -m 2>/dev/null)"
-printf 'Log file: %s\n' "${IRIDI_CAN_MONITOR_LOG_FILE:-not set}"
+printf 'Technical log: %s\n' "$LOG_FILE"
 if [ "$PASSIVE_ONLY" -eq 1 ]; then
   printf 'Mode: passive only; no CAN frames are transmitted\n'
 else
   printf 'Mode: read-only identity & conflict check, then passive decoded monitoring\n'
 fi
 printf 'Monitor duration: %s seconds\n' "$MONITOR_SECONDS"
+log_tech "CONFIG: interfaces=$INTERFACES passive=$PASSIVE_ONLY duration=$MONITOR_SECONDS filter_lid=$FILTER_LID filter_cmd=$FILTER_CMD"
 [ -n "$FILTER_LID" ] && printf 'Filter LID: %s\n' "$FILTER_LID"
 [ -n "$FILTER_CMD" ] && printf 'Filter Command: %s\n' "$FILTER_CMD"
 [ "$SHOW_RAW" -eq 1 ] && printf 'Raw frame display: enabled\n'
@@ -968,6 +993,8 @@ printf 'Selected interfaces and initial state\n'
 PRIMARY_BITRATE=125000
 for CAN_INTERFACE in $INTERFACES; do
   snapshot_stats "$CAN_INTERFACE" "$WORK_DIR/$CAN_INTERFACE.before"
+  log_tech "INITIAL CAN DETAILS: $CAN_INTERFACE"
+  ip -details -statistics link show "$CAN_INTERFACE" >&3 2>&1
   INITIAL_STATE="$(can_state "$CAN_INTERFACE")"
   INITIAL_BITRATE="$(ip -details link show "$CAN_INTERFACE" 2>/dev/null | awk '/ bitrate / { for (i=1;i<=NF;i++) if ($i=="bitrate") {print $(i+1); exit} }')"
   [ -n "$INITIAL_BITRATE" ] && PRIMARY_BITRATE="$INITIAL_BITRATE"
@@ -1017,6 +1044,7 @@ for CAN_INTERFACE in $INTERFACES; do
 done
 
 if [ "$FAILURES" -eq 0 ]; then
+  log_tech "CAPTURE START: interfaces=$INTERFACES duration=$MONITOR_SECONDS"
   if command -v timeout >/dev/null 2>&1 && command -v tee >/dev/null 2>&1; then
     timeout "$MONITOR_SECONDS" candump -x -e $INTERFACES 2>&1 | tee "$CAPTURE_FILE" | decode_bus77_traffic
   else
@@ -1033,6 +1061,9 @@ fi
 
 separator
 printf 'Traffic, Bus Load & Top Talkers Analysis\n'
+log_tech "CAPTURE COMPLETE"
+log_tech_file "RAW CAN CAPTURE" "$CAPTURE_FILE"
+log_tech_file "BUS77 INVENTORY" "$INVENTORY_FILE"
 if [ ! -s "$WORK_DIR/decoder.status" ]; then
   fail 'The Bus77 decoder did not complete successfully.'
 elif [ "$(cat "$WORK_DIR/decoder.status")" -gt 0 ]; then
@@ -1057,7 +1088,7 @@ BUS_LOAD_PERCENT="$(awk -v total="$TOTAL_CAPTURED" -v sec="$MONITOR_SECONDS" -v 
 ')"
 
 printf '  Captured frames     : %s total, %s RX, %s TX, %s CAN error frames\n' "$TOTAL_CAPTURED" "$TOTAL_RX_CAPTURED" "$TOTAL_TX_CAPTURED" "$TOTAL_ERROR_CAPTURED"
-printf '  Average Traffic Rate: %s frames/sec (Bus Load: %s%% of %s bit/s)\n' "$FPS" "$BUS_LOAD_PERCENT" "$PRIMARY_BITRATE"
+printf '  Average Traffic Rate: %s frames/sec (Estimated Bus Load: %s%% of %s bit/s)\n' "$FPS" "$BUS_LOAD_PERCENT" "$PRIMARY_BITRATE"
 
 if [ "$(awk -v load="$BUS_LOAD_PERCENT" 'BEGIN { print (load > 60.0) ? 1 : 0 }')" -eq 1 ]; then
   warn "High CAN bus load ($BUS_LOAD_PERCENT%). Check for packet storms or flapping dry contacts."
@@ -1068,8 +1099,9 @@ fi
 # Top Talkers Breakdown Table
 if [ -s "$WORK_DIR/top_talkers.txt" ] && [ "$TOTAL_CAPTURED" -gt 0 ]; then
   printf '\n  TOP TALKERS (Device Activity Ranking):\n'
-  printf '  %-4s %-12s %-24s %-8s %-10s %s\n' 'RANK' 'SENDER' 'MODEL / NAME' 'FRAMES' '%% TRAFFIC' 'AVG RATE'
-  awk -F'|' -v total="$TOTAL_CAPTURED" -v sec="$MONITOR_SECONDS" '
+  TOTAL_DECODED="$(awk -F'|' '{total += $NF} END {print total+0}' "$WORK_DIR/top_talkers.txt")"
+  printf '  %-4s %-12s %-24s %-8s %-10s %s\n' 'RANK' 'SENDER' 'MODEL / NAME' 'PACKETS' '% PACKETS' 'AVG RATE'
+  awk -F'|' -v total="$TOTAL_DECODED" -v sec="$MONITOR_SECONDS" '
     {
       if ($1 == "LOCAL_SERVER") {
         sender = "SERVER/GW"
@@ -1088,7 +1120,7 @@ if [ -s "$WORK_DIR/top_talkers.txt" ] && [ "$TOTAL_CAPTURED" -gt 0 ]; then
         split(k, f, SUBSEP)
         pct = (total > 0) ? (talkers[k] / total) * 100 : 0
         rate = (sec > 0) ? talkers[k] / sec : 0
-        printf "%08d|%s|%s|%d|%.1f%%|%.1f fps\n", talkers[k], f[1], f[2], talkers[k], pct, rate
+        printf "%08d|%s|%s|%d|%.1f%%|%.1f pkt/s\n", talkers[k], f[1], f[2], talkers[k], pct, rate
       }
     }
   ' "$WORK_DIR/top_talkers.txt" | sort -rn | awk -F'|' '
@@ -1101,7 +1133,7 @@ if [ -s "$WORK_DIR/top_talkers.txt" ] && [ "$TOTAL_CAPTURED" -gt 0 ]; then
     }
     END {
       if (high_talker != "") {
-        print "  [ATTENTION] Top talker " high_talker " is generating over 50% of all bus traffic."
+        print "  [ATTENTION] Top talker " high_talker " accounts for over 50% of decoded Bus77 packets."
       }
     }
   '
@@ -1118,6 +1150,7 @@ for CAN_INTERFACE in $INTERFACES; do
   RX_DROPPED_DELTA=$(($(read_snapshot "$AFTER_FILE" rx_dropped) - $(read_snapshot "$BEFORE_FILE" rx_dropped)))
   TX_DROPPED_DELTA=$(($(read_snapshot "$AFTER_FILE" tx_dropped) - $(read_snapshot "$BEFORE_FILE" tx_dropped)))
   FINAL_STATE="$(can_state "$CAN_INTERFACE")"
+  log_tech "CAN DELTA $CAN_INTERFACE: rx=$RX_DELTA tx=$TX_DELTA rx_errors=$RX_ERRORS_DELTA tx_errors=$TX_ERRORS_DELTA rx_dropped=$RX_DROPPED_DELTA tx_dropped=$TX_DROPPED_DELTA state=$FINAL_STATE"
   printf '  %s: kernel RX=%s, TX=%s, new errors RX/TX=%s/%s, new drops RX/TX=%s/%s, state=%s\n' \
     "$CAN_INTERFACE" "$RX_DELTA" "$TX_DELTA" "$RX_ERRORS_DELTA" "$TX_ERRORS_DELTA" \
     "$RX_DROPPED_DELTA" "$TX_DROPPED_DELTA" "${FINAL_STATE:-not determined}"
@@ -1151,6 +1184,7 @@ printf '  Captured: %s RX, %s TX, %s error frames\n' "$TOTAL_RX_CAPTURED" "$TOTA
 printf '  Bus Load: %s%% (%s fps)\n' "$BUS_LOAD_PERCENT" "$FPS"
 printf '  Failures: %s\n' "$FAILURES"
 printf '  Attention items: %s\n' "$WARNINGS"
+log_tech "SUMMARY: frames=$TOTAL_CAPTURED rx=$TOTAL_RX_CAPTURED tx=$TOTAL_TX_CAPTURED error_frames=$TOTAL_ERROR_CAPTURED estimated_load=$BUS_LOAD_PERCENT failures=$FAILURES warnings=$WARNINGS"
 if [ "$FAILURES" -gt 0 ]; then
   printf 'RESULT: FAIL - NOT OK: the CAN monitor found a critical problem or could not run.\n'
   exit 2

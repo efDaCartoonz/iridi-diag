@@ -18,6 +18,7 @@ case "${1:-}" in
     printf 'Usage: sh %s [options]\n\n' "${0##*/}"
     printf 'Options:\n'
     printf '  --json        Output summary in JSON format\n'
+    printf '  --data-dir DIR Override iRidi data directory discovery\n'
     printf '  -h, --help    Show this help message and exit\n\n'
     printf 'Description:\n'
     printf '  Collects and reports comprehensive hardware identity, server firmware version,\n'
@@ -27,9 +28,18 @@ case "${1:-}" in
     ;;
 esac
 
-TOOL_VERSION="2.0"
+TOOL_VERSION="2.2"
 JSON_OUTPUT=0
-[ "${1:-}" = "--json" ] && JSON_OUTPUT=1
+IRIDI_DIAG_DATA_DIR=${IRIDI_DIAG_DATA_DIR:-}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) JSON_OUTPUT=1; shift ;;
+    --data-dir)
+      [ "$#" -ge 2 ] && [ -d "$2" ] || { printf '[NOT OK] --data-dir requires an existing directory\n' >&2; exit 2; }
+      IRIDI_DIAG_DATA_DIR=$2; shift 2 ;;
+    *) printf '[NOT OK] Unknown argument: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
 
 # Setup logging directory & technical log file
 CURRENT_DIR="$(pwd 2>/dev/null || printf '.')"
@@ -57,6 +67,12 @@ if ! exec 3>>"$LOG_FILE" 2>/dev/null; then
     printf '[NOT OK] Could not open log file for writing: %s\n' "$LOG_FILE" >&2
     exit 2
   fi
+fi
+
+# Keep JSON stdout machine-readable; the dashboard remains in the audit log.
+if [ "$JSON_OUTPUT" -eq 1 ]; then
+  exec 4>&1
+  exec 1>&3
 fi
 
 # Terminal colors (screen only)
@@ -87,7 +103,7 @@ log_tech() {
 log_tech_file() {
   _HEADER="$1"
   _FILE="$2"
-  if [ -s "$_FILE" ]; then
+  if [ -r "$_FILE" ]; then
     printf '[%s] --- BEGIN %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_HEADER" >&3
     cat "$_FILE" >&3 2>/dev/null
     printf '[%s] --- END %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_HEADER" >&3
@@ -101,6 +117,139 @@ log_tech_cmd() {
   "$@" >&3 2>&1 || true
   printf '[%s] --- END CMD: %s ---\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '-')" "$_LABEL" >&3
 }
+
+json_string() {
+  printf '%s' "$1" | awk '
+    BEGIN { printf "\"" }
+    {
+      if (NR > 1) printf "\\n"
+      for (i=1; i<=length($0); i++) {
+        c=substr($0,i,1)
+        if (c=="\\") printf "\\\\"
+        else if (c=="\"") printf "\\\""
+        else if (c=="\t") printf "\\t"
+        else if (c=="\r") printf "\\r"
+        else if (c ~ /[[:cntrl:]]/) printf "?"
+        else printf "%s",c
+      }
+    }
+    END { printf "\"" }
+  '
+}
+
+# Keep these helpers identical in both standalone diagnostic scripts.
+hal_serial_port() (
+  # HAL entries may be symlinks to live UARTs: never cat a character device.
+  if [ -L "$1" ]; then
+    readlink -f "$1" 2>/dev/null
+  elif [ -f "$1" ] && [ -r "$1" ]; then
+    tr -d '\r\n' <"$1"
+  fi
+)
+serial_port_roles() (
+  role_target="$(readlink -f "$1" 2>/dev/null || printf '%s' "$1")"
+  for role_file in /oem/hal/*_port; do
+    role_port="$(hal_serial_port "$role_file")"
+    case "$role_port" in /dev/*) ;; *) continue ;; esac
+    [ -e "$role_port" ] || continue
+    role_real="$(readlink -f "$role_port" 2>/dev/null || printf '%s' "$role_port")"
+    [ "$role_real" = "$role_target" ] || continue
+    case "${role_file##*/}" in
+      485_port) role_name="RS-485" ;;
+      232_port) role_name="RS-232" ;;
+      knx_port) role_name="KNX" ;;
+      *) role_name="${role_file##*/}" ;;
+    esac
+    printf '%s (%s)\n' "$role_name" "$role_port"
+  done
+)
+
+detect_serial_ports() (
+  serial_seen=" "
+  # HAL mappings may reference tty devices outside the usual UART name patterns.
+  serial_hal="$(for serial_file in /oem/hal/*_port; do
+    serial_value="$(hal_serial_port "$serial_file")"
+    if [ "${serial_value#/dev/}" != "$serial_value" ]; then
+      printf '%s\n' "$serial_value"
+    fi
+  done)"
+  for serial_port in /dev/ttyS* /dev/ttyUSB* /dev/ttyAMA* /dev/ttymxc* /dev/ttyAP* $serial_hal; do
+    [ -c "$serial_port" ] || continue
+    serial_real="$(readlink -f "$serial_port" 2>/dev/null || printf '%s' "$serial_port")"
+    case "$serial_real" in
+      /dev/ttyS[2-9]|/dev/ttyS[1-9][0-9])
+        [ -d "/sys/class/tty/${serial_real##*/}/device" ] || continue ;;
+    esac
+    case "$serial_seen" in *" $serial_real "*) continue ;; esac
+    serial_seen="$serial_seen$serial_real "
+    printf '%s\n' "$serial_real"
+  done
+)
+
+# Discover runtime evidence without dumping command lines or credential-bearing XML.
+discover_iridi_data_dir() (
+  if [ -n "${IRIDI_DIAG_DATA_DIR:-}" ]; then
+    [ ! -d "$IRIDI_DIAG_DATA_DIR" ] || printf '%s\n' "$IRIDI_DIAG_DATA_DIR"
+    exit
+  fi
+  data_pid=$(pidof iridium 2>/dev/null | awk '{print $1}')
+  if [ -n "$data_pid" ]; then
+    for data_fd in /proc/"$data_pid"/fd/*; do
+      data_target=$(readlink "$data_fd" 2>/dev/null)
+      case "$data_target" in
+        */DataBase/*) data_root=${data_target%/DataBase/*} ;;
+        */Logs/*) data_root=${data_target%/Logs/*} ;;
+        *) continue ;;
+      esac
+      if [ -d "$data_root" ]; then printf '%s\n' "$data_root"; exit; fi
+    done
+  fi
+  for data_root in '/var/lib/iRidium Server' /userdata/iridi /opt/iridi; do
+    if [ -d "$data_root" ]; then printf '%s\n' "$data_root"; exit; fi
+  done
+)
+
+latest_iridi_log() (
+  # Shell-expanded arguments preserve spaces and apostrophes in paths.
+  ls -t "$1/Logs/"*.txt "$1/Logs/"*.log "$1/Documents/Logs/"*.txt "$1/Documents/Logs/"*.log 2>/dev/null | head -n 1
+)
+
+iridi_project_evidence() (
+  evidence_root=$1
+  for evidence_config in "$evidence_root/Documents/irconfig.xml" "$evidence_root/irconfig.xml" "$evidence_root/Documents/system.xml" "$evidence_root/system.xml"; do
+    [ -f "$evidence_config" ] && [ -r "$evidence_config" ] || continue
+    printf 'Configuration source: %s\n' "$evidence_config"
+    # Only allowlisted attributes/tags are emitted; never dump the whole XML.
+    head -c 262144 "$evidence_config" | awk '
+      function attr(s,key, x) {
+        if(match(s,"(^|[[:space:]])" key "=\"[^\"]*\"")) {
+          x=substr(s,RSTART,RLENGTH);sub(/^[^=]*=\"/,"",x);sub(/\"$/,"",x);return x
+        }
+        return ""
+      }
+      BEGIN {RS="<"}
+      /^Designs[[:space:]]/ {current=attr($0,"Current")}
+      /^Design[[:space:]]/ {if(n<10){n++;names[n]=attr($0,"Name");files[n]=attr($0,"File")}}
+      /^ActiveProject>/ {x=$0;sub(/^[^>]*>/,"",x);print "Configured project tag: " x}
+      /^ProjectName>/ {x=$0;sub(/^[^>]*>/,"",x);print "Configured project name: " x}
+      END {
+        if(current!="")print "Configured current reference: " current
+        for(i=1;i<=n;i++)print "Configured design candidate: " names[i] " | " files[i]
+      }
+    '
+  done
+  evidence_pid=$(pidof iridium 2>/dev/null | awk '{print $1}')
+  if [ -n "$evidence_pid" ]; then
+    for evidence_fd in /proc/"$evidence_pid"/fd/*; do
+      evidence_target=$(readlink "$evidence_fd" 2>/dev/null)
+      case "$evidence_target" in *.irp|*.sirp|*.sirpz|*.rpz|*.irpz) printf 'Process open project file: %s\n' "$evidence_target" ;; esac
+    done
+    if [ -r "/proc/$evidence_pid/cmdline" ]; then
+      tr '\000' '\n' <"/proc/$evidence_pid/cmdline" | awk '/\.(irp|sirp|sirpz|rpz|irpz)$/ {print "Process project argument: " $0}'
+    fi
+  fi
+  printf '%s\n' 'Configured references are not proof of a running project; correlate process evidence and successful-load log markers.'
+)
 
 set +e
 export LC_ALL=C
@@ -170,6 +319,8 @@ check_hardware_identity() {
   SERIAL=""
   CPU_SERIAL=""
   SW_VERSION=""
+  OS_BUILD_ID=""
+  FIRMWARE_TIMESTAMP=""
 
   if [ -r /oem/hal/ccinfo ]; then
     SERIAL="$(awk -F': *' '/Controller serial/{print $2}' /oem/hal/ccinfo | sed 's/^[ \t]*//;s/[ \t]*$//')"
@@ -193,6 +344,13 @@ check_hardware_identity() {
   if [ -z "$SW_VERSION" ] && [ -r /etc/os-release ]; then
     SW_VERSION="$(awk -F'=' '/PRETTY_NAME/{gsub(/"/, ""); print $2}' /etc/os-release)"
   fi
+  # Read os-release as data; never source firmware-provided shell content.
+  for OS_RELEASE in /etc/os-release /usr/lib/os-release; do
+    [ -r "$OS_RELEASE" ] || continue
+    OS_BUILD_ID="$(sed -n 's/^BUILD_ID=//p' "$OS_RELEASE" | tr -d '\"\047\r' | head -n 1)"
+    [ -n "$OS_BUILD_ID" ] && break
+  done
+  [ ! -r /timestamp ] || FIRMWARE_TIMESTAMP="$(head -n 1 /timestamp | tr -d '\r')"
 
   UPTIME_FMT="n/a"
   if [ -r /proc/uptime ]; then
@@ -220,8 +378,55 @@ check_hardware_identity() {
   printf '  - Hardware Model     : %s\n' "${MODEL:-Unknown Model}"
   printf '  - Controller Serial  : %s (CPU Serial: %s)\n' "${SERIAL:-n/a}" "${CPU_SERIAL:-n/a}"
   printf '  - Operating System   : %s (Kernel: %s)\n' "${SW_VERSION:-Linux}" "$(uname -r 2>/dev/null)"
+  printf '  - OS Build ID        : %s\n' "${OS_BUILD_ID:-not reported}"
+  printf '  - Firmware Build     : %s\n' "${FIRMWARE_TIMESTAMP:-not reported}"
   printf '  - System Uptime      : %s (Load average: %s)\n' "$UPTIME_FMT" "$LOAD_FMT"
   log_tech "IDENTITY: model=$MODEL serial=$SERIAL cpu_serial=$CPU_SERIAL os=$SW_VERSION uptime=$UPTIME_FMT load=$LOAD_FMT"
+  log_tech "FIRMWARE: build_id=$OS_BUILD_ID timestamp=$FIRMWARE_TIMESTAMP"
+  log_tech_file "OS RELEASE" /etc/os-release
+  log_tech_file "FIRMWARE BUILD" /timestamp
+}
+
+check_rtc_health() {
+  if [ ! -e /dev/rtc0 ] && [ ! -d /sys/class/rtc/rtc0 ]; then
+    info "No hardware RTC clock device (/dev/rtc0) found."
+    return
+  fi
+  RTC_NAME="$(cat /sys/class/rtc/rtc0/name 2>/dev/null)"
+  RTC_TIME="$(cat /sys/class/rtc/rtc0/time 2>/dev/null)"
+  RTC_DATE="$(cat /sys/class/rtc/rtc0/date 2>/dev/null)"
+  RTC_EPOCH="$(cat /sys/class/rtc/rtc0/since_epoch 2>/dev/null)"
+  BATTERY_LOW="$(cat /sys/class/rtc/rtc0/device/battery_low 2>/dev/null)"
+  info "RTC model: ${RTC_NAME:-not reported}; UTC: ${RTC_DATE:-unreadable} ${RTC_TIME:-unreadable}"
+  case "$BATTERY_LOW" in
+    1) fail "RTC backup battery reports LOW / EXHAUSTED." ;;
+    0) ok "RTC backup battery: no low-battery flag reported (retention not tested)." ;;
+    *) warn "RTC battery state is unknown: no supported battery_low value reported." ;;
+  esac
+  if [ -z "$RTC_DATE" ] || [ -z "$RTC_TIME" ]; then
+    warn "RTC date/time could not be read; clock operation is unverified."
+  else
+    # since_epoch is a coherent kernel reading; date -d is an optional fallback.
+    case "$RTC_EPOCH" in
+      ''|*[!0-9]*) RTC_EPOCH="$(date -u -d "$RTC_DATE $RTC_TIME" +%s 2>/dev/null)" ;;
+    esac
+    SYSTEM_EPOCH="$(date -u +%s 2>/dev/null)"
+    case "$RTC_EPOCH:$SYSTEM_EPOCH" in
+      *[!0-9:]*|:*|*:) info "RTC/system UTC offset could not be calculated with available tools." ;;
+      *)
+        RTC_OFFSET=$((RTC_EPOCH - SYSTEM_EPOCH))
+        if [ "$RTC_OFFSET" -gt 60 ] || [ "$RTC_OFFSET" -lt -60 ]; then
+          warn "RTC differs from system UTC by ${RTC_OFFSET}s (limit: 60s); neither clock is an external time reference."
+        else
+          ok "RTC and system UTC agree within 60s (offset: ${RTC_OFFSET}s; retention not tested)."
+        fi
+        ;;
+    esac
+  fi
+  info "System timezone: $(date '+%Z %z' 2>/dev/null); localtime: $(readlink /etc/localtime 2>/dev/null || printf 'regular file or unavailable')"
+  log_tech "RTC: name=$RTC_NAME date=$RTC_DATE time=$RTC_TIME epoch=$RTC_EPOCH battery_low=${BATTERY_LOW:-unknown}"
+  log_tech_file "RTC DRIVER" /proc/driver/rtc
+  log_tech_cmd "RTC / CAN BOOT MESSAGES" sh -c 'dmesg 2>/dev/null | grep -iE "rtc|mcp251|can[0-9]"'
 }
 
 # ==============================================================================
@@ -231,22 +436,14 @@ check_peripherals_and_io() {
   printf '\n%s[2/8] Hardware Peripherals & I/O (RS-485, RTC, Watchdog)%s\n' "$C_BOLD" "$C_RESET"
 
   # 1. Serial & RS-485 Ports
-  SERIAL_PORTS=""
-  for PORT in /dev/ttyS* /dev/ttyUSB* /dev/ttyAMA* /dev/ttymxc* /dev/ttyAP*; do
-    [ -e "$PORT" ] || continue
-    # Filter out inactive virtual ttyS ports
-    case "$PORT" in
-      /dev/ttyS[2-9]|/dev/ttyS[1-9][0-9])
-        if [ ! -d "/sys/class/tty/${PORT##*/}/device" ]; then
-          continue
-        fi
-        ;;
-    esac
-    SERIAL_PORTS="${SERIAL_PORTS:+$SERIAL_PORTS }${PORT}"
-  done
+  SERIAL_PORTS="$(detect_serial_ports)"
 
   if [ -n "$SERIAL_PORTS" ]; then
-    ok "Detected serial / RS-485 port(s): $SERIAL_PORTS"
+    ok "Detected serial / RS-485 port(s): $(printf '%s' "$SERIAL_PORTS" | tr '\n' ' ')"
+    for PORT in $SERIAL_PORTS; do
+      PORT_ROLES="$(serial_port_roles "$PORT")"
+      [ -z "$PORT_ROLES" ] || info "$PORT: $PORT_ROLES"
+    done
     if [ -r /proc/tty/driver/serial ]; then
       log_tech_file "Serial driver statistics (/proc/tty/driver/serial)" "/proc/tty/driver/serial"
       # Check for frame / overrun errors
@@ -266,20 +463,7 @@ check_peripherals_and_io() {
   fi
 
   # 2. Hardware Real-Time Clock (RTC) & Battery
-  if [ -e /dev/rtc0 ] || [ -d /sys/class/rtc/rtc0 ]; then
-    RTC_TIME="$(cat /sys/class/rtc/rtc0/time 2>/dev/null)"
-    RTC_DATE="$(cat /sys/class/rtc/rtc0/date 2>/dev/null)"
-    BATTERY_LOW="$(cat /sys/class/rtc/rtc0/device/battery_low 2>/dev/null)"
-    
-    if [ "$BATTERY_LOW" = "1" ]; then
-      fail "RTC Backup Battery is LOW / EXHAUSTED (replace RTC battery)!"
-    else
-      ok "Hardware RTC (/dev/rtc0) is operational: ${RTC_DATE:-} ${RTC_TIME:-} (Battery: OK)."
-    fi
-    log_tech "RTC: rtc0 date=$RTC_DATE time=$RTC_TIME battery_low=$BATTERY_LOW"
-  else
-    info "No hardware RTC clock device (/dev/rtc0) found."
-  fi
+  check_rtc_health
 
   # 3. Hardware Watchdog
   if [ -e /dev/watchdog ] || [ -e /dev/watchdog0 ]; then
@@ -383,23 +567,7 @@ check_iridi_runtime() {
 check_iridi_data_and_projects() {
   printf '\n%s[4/8] iRidi Projects, Licenses & Database Integrity%s\n' "$C_BOLD" "$C_RESET"
 
-  # Find active data directory
-  ACTIVE_DATA_DIR=""
-  IRIDI_PID="$(pidof iridium 2>/dev/null | awk '{print $1}')"
-  if [ -n "$IRIDI_PID" ]; then
-    for FD_PATH in /proc/$IRIDI_PID/fd/*; do
-      [ -e "$FD_PATH" ] || continue
-      FD_TARGET="$(readlink "$FD_PATH" 2>/dev/null)"
-      case "$FD_TARGET" in
-        */DataBase/*)
-          ACTIVE_DATA_DIR="${FD_TARGET%/DataBase/*}"
-          break
-          ;;
-      esac
-    done
-  fi
-  [ -z "$ACTIVE_DATA_DIR" ] && [ -d /opt/iridi ] && ACTIVE_DATA_DIR="/opt/iridi"
-  [ -z "$ACTIVE_DATA_DIR" ] && [ -d /userdata/iridi ] && ACTIVE_DATA_DIR="/userdata/iridi"
+  ACTIVE_DATA_DIR="$(discover_iridi_data_dir)"
 
   if [ -n "$ACTIVE_DATA_DIR" ] && [ -d "$ACTIVE_DATA_DIR" ]; then
     printf '  - Data Directory         : %s\n' "$ACTIVE_DATA_DIR"
@@ -442,25 +610,14 @@ check_iridi_data_and_projects() {
       info "No standalone license.xml file found (may use cloud licensing or embedded token)."
     fi
 
-    # 2. Projects Inventory & Active Project
-    PROJECTS_DIR="$ACTIVE_DATA_DIR/Documents/Projects"
+    # Configuration, open files and startup markers are separate evidence sources.
+    PROJECT_EVIDENCE="$(iridi_project_evidence "$ACTIVE_DATA_DIR")"
+    printf '%s\n' "$PROJECT_EVIDENCE" | while IFS= read -r PROJECT_LINE; do printf '  - %s\n' "$PROJECT_LINE"; done
+    log_tech "PROJECT EVIDENCE: $PROJECT_EVIDENCE"
+    PROJECTS_DIR="$ACTIVE_DATA_DIR/Documents"
     if [ -d "$PROJECTS_DIR" ]; then
-      PROJ_COUNT="$(find "$PROJECTS_DIR" -type f \( -name "*.sirp" -o -name "*.rpz" \) 2>/dev/null | wc -l | tr -d ' ')"
-      if [ "$PROJ_COUNT" -gt 0 ]; then
-        ok "Installed server project(s) ($PROJ_COUNT file(s) in Documents/Projects):"
-        find "$PROJECTS_DIR" -type f \( -name "*.sirp" -o -name "*.rpz" \) -exec ls -lh {} + 2>/dev/null | awk '{printf "     - %s (Size: %s, Modified: %s %s)\n", $NF, $5, $6, $7}'
-        
-        # Check active project from system config if available
-        SYS_XML="$ACTIVE_DATA_DIR/Documents/system.xml"
-        [ -r "$SYS_XML" ] || SYS_XML="$ACTIVE_DATA_DIR/system.xml"
-        if [ -r "$SYS_XML" ]; then
-          ACT_PROJ="$(sed -n 's/.*<ActiveProject>[[:space:]]*\([^<]*\)[[:space:]]*<\/ActiveProject>.*/\1/p' "$SYS_XML" 2>/dev/null)"
-          [ -z "$ACT_PROJ" ] && ACT_PROJ="$(sed -n 's/.*<ProjectName>[[:space:]]*\([^<]*\)[[:space:]]*<\/ProjectName>.*/\1/p' "$SYS_XML" 2>/dev/null)"
-          [ -n "$ACT_PROJ" ] && info "Active project configured in system.xml: $ACT_PROJ"
-        fi
-      else
-        info "No server projects (.sirp/.rpz) found in Documents/Projects."
-      fi
+      PROJ_COUNT="$(find "$PROJECTS_DIR" -type f \( -name '*.sirp' -o -name '*.sirpz' -o -name '*.rpz' -o -name '*.irpz' -o -name '*.irp' \) 2>/dev/null | wc -l | tr -d ' ')"
+      info "Project files found under Documents: $PROJ_COUNT (inventory alone does not prove which project is running)."
     fi
 
     # 3. SQLite Database Integrity Check
@@ -472,7 +629,7 @@ check_iridi_data_and_projects() {
         
         # Check integrity if sqlite3 is available
         if command -v sqlite3 >/dev/null 2>&1; then
-          INTEG_RES="$(sqlite3 "$DB_FILE" "PRAGMA integrity_check;" 2>&1)"
+          INTEG_RES="$(sqlite3 -readonly "$DB_FILE" "PRAGMA integrity_check;" 2>&1)"
           if [ "$INTEG_RES" = "ok" ]; then
             ok "Database ${DB_FILE##*/}: Integrity check PASS ($DB_SIZE)."
           else
@@ -500,19 +657,22 @@ check_iridi_data_and_projects() {
       done
     fi
 
-    # 4. Scan Recent Logs for Critical Errors
-    LOG_DIR_IRIDI="$ACTIVE_DATA_DIR/Documents/Logs"
-    if [ -d "$LOG_DIR_IRIDI" ]; then
-      LATEST_LOG="$(ls -t "$LOG_DIR_IRIDI"/*.log 2>/dev/null | head -n 1)"
-      if [ -n "$LATEST_LOG" ] && [ -r "$LATEST_LOG" ]; then
-        CRIT_ERRS="$(tail -n 200 "$LATEST_LOG" 2>/dev/null | grep -ciE '(CRITICAL|EXCEPTION|Segmentation fault|Fatal error|Bus error)' || true)"
-        if [ "$CRIT_ERRS" -gt 0 ]; then
-          warn "Detected $CRIT_ERRS error/exception markers in recent server log (${LATEST_LOG##*/})."
-          log_tech_cmd "LATEST LOG ERROR EXCERPT" sh -c "tail -n 200 '$LATEST_LOG' | grep -iE '(CRITICAL|EXCEPTION|Segmentation fault|Fatal error|Bus error)'"
-        else
-          ok "Recent server log (${LATEST_LOG##*/}) is clean (0 fatal errors in last 200 lines)."
-        fi
+    # 4. Inspect real server logs (.txt and .log, both directory layouts).
+    LATEST_LOG="$(latest_iridi_log "$ACTIVE_DATA_DIR")"
+    if [ -n "$LATEST_LOG" ] && [ -f "$LATEST_LOG" ] && [ -r "$LATEST_LOG" ]; then
+      info "Latest server log: $LATEST_LOG"
+      CRIT_ERRS="$(tail -n 200 "$LATEST_LOG" 2>/dev/null | grep -ciE '(CRITICAL|EXCEPTION|Segmentation fault|Fatal error|Bus error)' || true)"
+      if [ "$CRIT_ERRS" -gt 0 ]; then
+        warn "Detected $CRIT_ERRS error/exception markers in the last 200 log lines; markers are not a root-cause diagnosis."
+      else
+        ok 'No fatal error markers found in the last 200 server log lines (limited excerpt).'
       fi
+      log_tech "LATEST LOG ERROR EXCERPT: $LATEST_LOG"
+      tail -n 200 "$LATEST_LOG" | grep -iE '(CRITICAL|EXCEPTION|Segmentation fault|Fatal error|Bus error)' >&3 || :
+      log_tech 'PROJECT STARTUP MARKERS (bounded first 64 KiB)'
+      head -c 65536 "$LATEST_LOG" | grep -iE 'project|loading|started to work' | head -n 30 >&3 || :
+    else
+      warn 'Server log not found/readable in Logs or Documents/Logs; recent-log health is unverified.'
     fi
 
   else
@@ -599,8 +759,8 @@ check_emmc_and_storage() {
   printf '\n%s[7/8] Storage & eMMC Wear Indicators (SMART)%s\n' "$C_BOLD" "$C_RESET"
 
   MMC_DEV=""
-  for CANDIDATE in /sys/class/mmc_host/mmc1/mmc1:0001 /sys/class/mmc_host/mmc0/mmc0:0001 /sys/block/mmcblk0/device /sys/block/mmcblk1/device; do
-    if [ -d "$CANDIDATE" ]; then
+  for CANDIDATE in /sys/bus/mmc/devices/*; do
+    if [ -d "$CANDIDATE" ] && [ "$(cat "$CANDIDATE/type" 2>/dev/null)" = "MMC" ]; then
       MMC_DEV="$CANDIDATE"
       break
     fi
@@ -611,6 +771,9 @@ check_emmc_and_storage() {
     MMC_MANFID="$(cat "$MMC_DEV/manfid" 2>/dev/null)"
     MMC_LIFE="$(cat "$MMC_DEV/life_time" 2>/dev/null)"
     MMC_PRE_EOL="$(cat "$MMC_DEV/pre_eol_info" 2>/dev/null)"
+    MMC_HOST="${MMC_DEV##*/}"
+    MMC_HOST="${MMC_HOST%%:*}"
+    log_tech_file "EMMC BUS IOS ($MMC_HOST)" "/sys/kernel/debug/$MMC_HOST/ios"
 
     MANUFACTURER_STR="Unknown"
     case "$MMC_MANFID" in
@@ -647,6 +810,8 @@ check_emmc_and_storage() {
       fail "eMMC Flash: ${MMC_NAME:-eMMC} ($MANUFACTURER_STR) — CRITICAL WEAR: Life A: $(decode_life "$LIFE_A"), Life B: $(decode_life "$LIFE_B")!"
     elif [ "$MMC_PRE_EOL" = "0x02" ] || [ "$LIFE_A" = "0x09" ] || [ "$LIFE_B" = "0x09" ]; then
       warn "eMMC Flash: ${MMC_NAME:-eMMC} ($MANUFACTURER_STR) — ELEVATED WEAR: Life A: $(decode_life "$LIFE_A"), Life B: $(decode_life "$LIFE_B")."
+    elif [ "$(decode_life "$LIFE_A")" = "n/a" ] || [ "$(decode_life "$LIFE_B")" = "n/a" ] || [ "$MMC_PRE_EOL" != "0x01" ]; then
+      warn "eMMC Flash: ${MMC_NAME:-eMMC} — Wear status unknown or incomplete (A=$LIFE_A, B=$LIFE_B, Pre-EOL=$MMC_PRE_EOL)."
     else
       ok "eMMC Flash: ${MMC_NAME:-eMMC} ($MANUFACTURER_STR) — Wear: $(decode_life "$LIFE_A") (Health: Normal)."
     fi
@@ -770,6 +935,16 @@ print_summary() {
   log_tech "================================================================================"
   log_tech "DIAGNOSTIC COMPLETE | Exit Code: $FINAL_RC | Failures: $FAIL_COUNT | Warnings: $WARN_COUNT"
   log_tech "================================================================================"
+  if [ "$JSON_OUTPUT" -eq 1 ]; then
+    case "$FINAL_RC" in 0) JSON_STATUS=PASS ;; 1) JSON_STATUS=WARN ;; *) JSON_STATUS=FAIL ;; esac
+    printf '{"status":"%s","exit_code":%d,"failures":%d,"warnings":%d,"model":%s,"serial":%s,"os_build_id":%s,"firmware_build":%s,"data_directory":%s,"latest_log":%s,"rtc":{"model":%s,"battery_low":%s,"offset_seconds":%s},"log_file":%s}\n' \
+      "$JSON_STATUS" "$FINAL_RC" "$FAIL_COUNT" "$WARN_COUNT" \
+      "$(json_string "$MODEL")" "$(json_string "$SERIAL")" \
+      "$(json_string "$OS_BUILD_ID")" "$(json_string "$FIRMWARE_TIMESTAMP")" \
+      "$(json_string "${ACTIVE_DATA_DIR:-}")" "$(json_string "${LATEST_LOG:-}")" \
+      "$(json_string "${RTC_NAME:-}")" "$(json_string "${BATTERY_LOW:-unknown}")" \
+      "${RTC_OFFSET:-null}" "$(json_string "$LOG_FILE")" >&4
+  fi
   exit "$FINAL_RC"
 }
 
