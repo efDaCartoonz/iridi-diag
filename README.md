@@ -39,7 +39,7 @@ Windows PowerShell versions found on Windows 7, 10, and 11.
 | `monitor_server_runtime.sh` | CSV process observation: CPU, RSS, threads, FDs and disk I/O |
 | `check_ethernet.sh` | Ethernet link and error/drop/carrier counter deltas |
 | `capture_network.sh` | Bounded passive PCAP capture for Wireshark |
-| `check_server_health.sh` | Full 360° server audit (v2.2): hardware serials, edition/firmware, RS-485, RTC/battery, Watchdog, projects, SQLite, logs, RAM, and SMART |
+| `check_server_health.sh` | Full 360° server audit (v2.3): hardware serials, edition/firmware, RS-485, RTC/battery, Watchdog, projects, SQLite, logs, RAM, and SMART |
 | `check_serial_ports.sh` | RS-485 / Serial port diagnostics (v1.1): framing/overrun errors (fe/oe/pe), baudrate, process locks, half-duplex settings |
 | `check_i3knx.sh` | Application-level checks for i3 KNX cloud resources and Cloud Gate session (v1.5) |
 | `check_bus77_home.sh` | Application-level checks for Bus77 Home cloud resources (v1.5) |
@@ -47,7 +47,7 @@ Windows PowerShell versions found on Windows 7, 10, and 11.
 | `check_iridi_pro_ru.sh` | iRidi Pro Cloud checks for RU region (v1.5) |
 | `check_iridi_pro_eu.sh` | iRidi Pro Cloud checks for EU region (v1.5) |
 | `check_iridi_pro_cn.sh` | iRidi Pro Cloud checks for CN region (v1.5) |
-| `check_emmc_health.sh` | eMMC health (v2.2): SMART, multi-partition, inodes, write speed and 4K database latency benchmarks |
+| `check_emmc_health.sh` | eMMC health (v2.3): SMART, multi-partition, inodes, write speed and 4K database latency benchmarks |
 | `check_can_bus.sh` | CAN/Bus77 diagnostics (v2.4): controller health, device inventory (`--scan-only`), and JSON export |
 | `monitor_can_bus.sh` | **Bus77 Protocol Decoder & Monitor (v2.3)**: real-time packet decoding, Bus Load %, Top Talkers, Ping RTT |
 
@@ -249,7 +249,7 @@ The final output gives the archive path. Download that specific file (older HSS 
 scp -O root@HOST:/tmp/iridi-support-bundle.XXXXXX/support-bundle.tar.gz .
 ```
 
-## Server Health & 360° System Audit (Linux v2.2)
+## Server Health & 360° System Audit (Linux v2.3)
 
 Comprehensive diagnostic script for iRidi Linux controllers (HS Server, ProAV, UMC, KNX Home Server):
 
@@ -277,7 +277,7 @@ With `--json`, stdout contains only the summary object (`status`, `exit_code`, w
 4. **[4/8] Projects, Licenses & SQLite Database Integrity**: license audit (`license.xml`, ServerID, panel limits), loaded projects (`.sirp` / `.rpz`), SQLite database integrity checks (`PRAGMA integrity_check;`, WAL file sizes), and server log scan for fatal exceptions.
 5. **[5/8] Thermals & CPU**: SoC/CPU temperature sensors in °C, core count, and frequencies.
 6. **[6/8] Memory (RAM) & Swap**: total, used, free, available (MB and %), and OOM risk detection.
-7. **[7/8] eMMC Storage Wear (SMART)**: chip manufacturer, SLC and MLC/TLC wear % (LifeTime A/B), Pre-EOL status, partition free space, and kernel storage ring buffer error scan.
+7. **[7/8] eMMC Storage Wear (SMART)**: chip manufacturer, independent LifeTime A/B estimates and Pre-EOL reserve-block status, partition free space, and kernel storage ring buffer error scan.
 8. **[8/8] Network & Communication**: Ethernet (`eth0`/`eth1`) link speed/duplex, SocketCAN state (`ERROR-ACTIVE` / `ERROR-PASSIVE` / `BUS-OFF`), default gateway ping latency, and DNS servers.
 
 ---
@@ -321,6 +321,15 @@ sh check_emmc_health.sh
 ```
 
 - **Hardware SMART Wear**: manufacturer, manufacturing date, `LIFE_TIME_ESTIMATION` (Type A/B with 10% steps), `PRE_EOL_INFO` status, write-protect flags (`USER_WP`).
+Life A, Life B and Pre-EOL are always reported independently, with their raw values and descriptions, in the dashboard and technical log. In `check_server_health.sh --json`, the `emmc.life_a`, `emmc.life_b` and `emmc.pre_eol` objects contain `raw` and `description` fields.
+
+- Life A/B: `0x00` = not defined; `0x01`–`0x0A` = estimated lifetime used in 10% bands (0–10% through 90–100%); `0x0B` = estimated lifetime exceeded; other values are reserved/unknown. A missing attribute is reported as not reported. The A/B memory-area assignment depends on the manufacturer.
+- Pre-EOL: `0x00` = not defined; `0x01` = Normal, `0x02` = Warning, `0x03` = Urgent for reserve-block condition; other values are reserved/unknown.
+- Undefined/missing/reserved indicators leave valid indicators visible and produce the existing incomplete-data WARN; they do not establish a storage failure. A critical indicator retains priority. Lifetime estimates are neither percentages of damaged cells nor a guarantee of health.
+- Existing numeric thresholds and exit rules are retained: Life `0x09` is WARN in both tools; Life `0x0A` remains WARN in `check_emmc_health.sh` and FAIL in `check_server_health.sh`; Life `0x0B` or Pre-EOL `0x03` is FAIL, and Pre-EOL `0x02` is WARN. Frequency alone does not trigger a storage-fault warning.
+
+Example: `life_time=0x03 0x00`, `pre_eol_info=0x01` reports Life A = 20–30% estimated lifetime used, Life B = not defined, and Normal reserve-block condition. The incomplete-data verdict remains WARN. Reference: [Toradex eMMC health monitoring](https://developer.toradex.com/software/linux-resources/linux-features/emmc-linux/).
+
 - **eMMC bus details**: actual clock, width and timing from the selected MMC host's debugfs `ios`, plus CID/CSD and MMC boot messages in the technical log. Missing debugfs is reported without mounting it. Missing or unsupported wear indicators do not produce a healthy-wear verdict.
 - **Partition & Inode Health**: read-write status, free disk space, and inode exhaustion (`df -i`) across `/`, `/userdata`, and `/oem`.
 - **Kernel Storage Error Logs**: deep scan for I/O and EXT4 filesystem errors in `dmesg` and `/var/log/messages`.

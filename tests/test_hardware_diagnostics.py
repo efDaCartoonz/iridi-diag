@@ -166,7 +166,8 @@ date() { if [ "$*" = '-u +%s' ]; then echo 1700000000; else command date "$@"; f
                        'actual clock:\t200000000 Hz\nbus width:\t3 (8 bits)\ntiming spec:\t10 (mmc HS400 enhanced strobe)\n')
         functions = '\n'.join(shell_function(source, n) for n in
                               ['read_field', 'normalize_hex', 'manufacturer_name',
-                               'life_description', 'check_emmc_smart'])
+                               'life_description', 'pre_eol_description', 'life_defined',
+                               'report_emmc_indicators', 'check_emmc_smart'])
         functions = functions.replace('/sys/', str(self.root) + '/sys/')
         return run_shell('''
 WARNINGS=0; FAILURES=0
@@ -181,12 +182,12 @@ log_tech() { :; }; log_tech_file() { :; }; log_tech_cmd() { :; }
     def test_emmc_missing_debugfs_does_not_hide_smart(self):
         out = self.emmc(debugfs=False)
         self.assertIn('bus parameters unavailable', out)
-        self.assertIn('Health: Normal', out)
+        self.assertIn('within current thresholds', out)
 
     def test_emmc_unknown_wear_is_not_normal(self):
         out = self.emmc('', '')
-        self.assertIn('Wear status unknown', out)
-        self.assertNotIn('Health: Normal', out)
+        self.assertIn('Wear data incomplete', out)
+        self.assertNotIn('within current thresholds', out)
         self.assertIn('COUNTS 1 0', out)
 
     def test_emmc_critical_wear_takes_precedence(self):

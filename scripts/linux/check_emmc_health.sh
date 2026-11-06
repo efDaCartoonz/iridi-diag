@@ -18,7 +18,7 @@ case "${1:-}" in
     ;;
 esac
 
-TOOL_VERSION="2.2"
+TOOL_VERSION="2.3"
 WRITE_TEST=yes
 [ "${1:-}" = "--no-write" ] && WRITE_TEST=no
 
@@ -131,22 +131,60 @@ manufacturer_name() {
   esac
 }
 
+# Generic EXT_CSD estimates; A/B memory-area assignments are manufacturer-specific.
+# Reference: https://developer.toradex.com/software/linux-resources/linux-features/emmc-linux/
 life_description() {
   case "$(normalize_hex "$1")" in
-    0x00) printf 'estimate unavailable' ;;
-    0x01) printf '0-10%% used' ;;
-    0x02) printf '10-20%% used' ;;
-    0x03) printf '20-30%% used' ;;
-    0x04) printf '30-40%% used' ;;
-    0x05) printf '40-50%% used' ;;
-    0x06) printf '50-60%% used' ;;
-    0x07) printf '60-70%% used' ;;
-    0x08) printf '70-80%% used' ;;
-    0x09) printf '80-90%% used' ;;
-    0x0a) printf '90-100%% used (critical)' ;;
-    0x0b) printf 'rated life exceeded' ;;
-    *) printf 'n/a' ;;
+    '') printf 'not reported; lifetime estimate unknown' ;;
+    0x00) printf 'not defined' ;;
+    0x01) printf '0-10%% of estimated lifetime used' ;;
+    0x02) printf '10-20%% of estimated lifetime used' ;;
+    0x03) printf '20-30%% of estimated lifetime used' ;;
+    0x04) printf '30-40%% of estimated lifetime used' ;;
+    0x05) printf '40-50%% of estimated lifetime used' ;;
+    0x06) printf '50-60%% of estimated lifetime used' ;;
+    0x07) printf '60-70%% of estimated lifetime used' ;;
+    0x08) printf '70-80%% of estimated lifetime used' ;;
+    0x09) printf '80-90%% of estimated lifetime used' ;;
+    0x0a) printf '90-100%% of estimated lifetime used' ;;
+    0x0b) printf 'estimated lifetime exceeded' ;;
+    *) printf 'reserved value; lifetime estimate unknown' ;;
   esac
+}
+
+pre_eol_description() {
+  case "$(normalize_hex "$1")" in
+    '') printf 'not reported; reserve-block condition unknown' ;;
+    0x00) printf 'not defined' ;;
+    0x01) printf 'Normal (reserve-block condition)' ;;
+    0x02) printf 'Warning (reserve-block condition)' ;;
+    0x03) printf 'Urgent (reserve-block condition)' ;;
+    *) printf 'reserved value; reserve-block condition unknown' ;;
+  esac
+}
+
+life_defined() {
+  case "$(normalize_hex "$1")" in
+    0x01|0x02|0x03|0x04|0x05|0x06|0x07|0x08|0x09|0x0a|0x0b) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+report_emmc_indicators() {
+  EMMC_LIFE_A_RAW=$1
+  EMMC_LIFE_B_RAW=$2
+  EMMC_PRE_EOL_RAW=$3
+  EMMC_LIFE_A_DESC="$(life_description "$EMMC_LIFE_A_RAW")"
+  EMMC_LIFE_B_DESC="$(life_description "$EMMC_LIFE_B_RAW")"
+  EMMC_PRE_EOL_DESC="$(pre_eol_description "$EMMC_PRE_EOL_RAW")"
+  printf '  - Life A: %s - %s\n' "${EMMC_LIFE_A_RAW:-not reported}" "$EMMC_LIFE_A_DESC"
+  printf '  - Life B: %s - %s\n' "${EMMC_LIFE_B_RAW:-not reported}" "$EMMC_LIFE_B_DESC"
+  printf '  - Pre-EOL: %s - %s\n' "${EMMC_PRE_EOL_RAW:-not reported}" "$EMMC_PRE_EOL_DESC"
+  log_tech "EMMC Life A: raw='${EMMC_LIFE_A_RAW}' decoded='$EMMC_LIFE_A_DESC'"
+  log_tech "EMMC Life B: raw='${EMMC_LIFE_B_RAW}' decoded='$EMMC_LIFE_B_DESC'"
+  log_tech "EMMC Pre-EOL: raw='${EMMC_PRE_EOL_RAW}' decoded='$EMMC_PRE_EOL_DESC'"
+  printf '%s\n' '  [INFO] A/B areas are manufacturer-defined. Lifetime estimates are not damaged-cell percentages or a health guarantee.'
+  log_tech 'EMMC interpretation: A/B areas are manufacturer-defined; lifetime estimates are not damaged-cell percentages or a health guarantee.'
 }
 
 checksum_file() {
@@ -208,9 +246,12 @@ check_emmc_smart() {
     MMC_DATE="$(read_field "$MMC_DEVICE/date")"
     MMC_SERIAL="$(read_field "$MMC_DEVICE/serial")"
     MMC_LIFE="$(read_field "$MMC_DEVICE/life_time")"
-    MMC_LIFE_A="$(normalize_hex "$(printf '%s' "$MMC_LIFE" | awk '{print $1}')")"
-    MMC_LIFE_B="$(normalize_hex "$(printf '%s' "$MMC_LIFE" | awk '{print $2}')")"
-    MMC_PRE_EOL="$(normalize_hex "$(read_field "$MMC_DEVICE/pre_eol_info")")"
+    MMC_LIFE_A_RAW="$(printf '%s' "$MMC_LIFE" | awk '{print $1}')"
+    MMC_LIFE_B_RAW="$(printf '%s' "$MMC_LIFE" | awk '{print $2}')"
+    MMC_PRE_EOL_RAW="$(read_field "$MMC_DEVICE/pre_eol_info")"
+    MMC_LIFE_A="$(normalize_hex "$MMC_LIFE_A_RAW")"
+    MMC_LIFE_B="$(normalize_hex "$MMC_LIFE_B_RAW")"
+    MMC_PRE_EOL="$(normalize_hex "$MMC_PRE_EOL_RAW")"
 
     # Derive the host from the actual eMMC node; mmc0 is not always eMMC.
     MMC_HOST="${MMC_DEVICE##*/}"
@@ -230,25 +271,23 @@ check_emmc_smart() {
     log_tech_file "EMMC CSD" "$MMC_DEVICE/csd"
     log_tech_cmd "MMC BOOT MESSAGES" sh -c 'dmesg 2>/dev/null | grep -i mmc'
 
-    log_tech "EMMC RAW: dev=$MMC_DEVICE node=$MMC_NODE name=$MMC_NAME manfid=$MMC_MANFID life='$MMC_LIFE' pre_eol=$MMC_PRE_EOL"
+    log_tech "EMMC RAW: dev=$MMC_DEVICE node=$MMC_NODE name=$MMC_NAME manfid=$MMC_MANFID life='$MMC_LIFE' pre_eol='$MMC_PRE_EOL_RAW'"
 
     MANF_NAME="$(manufacturer_name "$MMC_MANFID")"
-    DESC_A="$(life_description "$MMC_LIFE_A")"
-    DESC_B="$(life_description "$MMC_LIFE_B")"
+    report_emmc_indicators "$MMC_LIFE_A_RAW" "$MMC_LIFE_B_RAW" "$MMC_PRE_EOL_RAW"
 
+    # Preserve the existing severity thresholds, including WARN for Life 0x0a.
     if [ "$MMC_PRE_EOL" = "0x03" ] || [ "$MMC_LIFE_A" = "0x0b" ] || [ "$MMC_LIFE_B" = "0x0b" ]; then
-      printf '  %s[NOT OK]%s    Device: %s (%s) — CRITICAL: Rated endurance exceeded!\n' "$C_RED" "$C_RESET" "${MMC_NAME:-eMMC}" "$MANF_NAME"
+      printf '  %s[NOT OK]%s    Device: %s (%s) — CRITICAL indicator reported; see Life A/B and Pre-EOL above\n' "$C_RED" "$C_RESET" "${MMC_NAME:-eMMC}" "$MANF_NAME"
       FAILURES=$((FAILURES + 1))
     elif [ "$MMC_PRE_EOL" = "0x02" ] || [ "$MMC_LIFE_A" = "0x0a" ] || [ "$MMC_LIFE_B" = "0x0a" ] || [ "$MMC_LIFE_A" = "0x09" ] || [ "$MMC_LIFE_B" = "0x09" ]; then
-      printf '  %s[ATTENTION]%s Device: %s (%s) — ELEVATED WEAR: A (SLC): %s, B (User): %s\n' \
-        "$C_YELLOW" "$C_RESET" "${MMC_NAME:-eMMC}" "$MANF_NAME" "$DESC_A" "$DESC_B"
+      printf '  %s[ATTENTION]%s Device: %s (%s) — Wear/reserve-block indicator requires attention\n' "$C_YELLOW" "$C_RESET" "${MMC_NAME:-eMMC}" "$MANF_NAME"
       WARNINGS=$((WARNINGS + 1))
-    elif [ "$DESC_A" = "n/a" ] || [ "$DESC_B" = "n/a" ] || [ "$MMC_LIFE_A" = "0x00" ] || [ "$MMC_LIFE_B" = "0x00" ] || [ "$MMC_PRE_EOL" != "0x01" ]; then
-      printf '  %s[ATTENTION]%s Device: %s — Wear status unknown or incomplete (A=%s, B=%s, Pre-EOL=%s)\n' "$C_YELLOW" "$C_RESET" "${MMC_NAME:-eMMC}" "$MMC_LIFE_A" "$MMC_LIFE_B" "$MMC_PRE_EOL"
+    elif ! life_defined "$MMC_LIFE_A" || ! life_defined "$MMC_LIFE_B" || [ "$MMC_PRE_EOL" != "0x01" ]; then
+      printf '  %s[ATTENTION]%s Device: %s — Wear data incomplete (missing/undefined/reserved indicator); this does not establish a device failure\n' "$C_YELLOW" "$C_RESET" "${MMC_NAME:-eMMC}"
       WARNINGS=$((WARNINGS + 1))
     else
-      printf '  %s[OK]%s        Device: %s (%s) — Wear: %s (Health: Normal)\n' \
-        "$C_GREEN" "$C_RESET" "${MMC_NAME:-eMMC}" "$MANF_NAME" "$DESC_B"
+      printf '  %s[OK]%s        Device: %s (%s) — Reported wear indicators are within current thresholds (estimates only)\n' "$C_GREEN" "$C_RESET" "${MMC_NAME:-eMMC}" "$MANF_NAME"
     fi
 
     # Check writable flag
@@ -465,7 +504,7 @@ print_summary() {
     log_tech "RESULT: FAIL"
     exit 2
   elif [ "$WARNINGS" -gt 0 ]; then
-    printf '\n%sRESULT: WARN — Storage is operational, but %d item(s) require attention%s\n' "$C_YELLOW" "$WARNINGS" "$C_RESET"
+    printf '\n%sRESULT: WARN — Storage checks completed with %d item(s) requiring attention%s\n' "$C_YELLOW" "$WARNINGS" "$C_RESET"
     printf 'Detailed technical log: %s\n\n' "$LOG_FILE"
     log_tech "RESULT: WARN"
     exit 1
@@ -473,7 +512,7 @@ print_summary() {
     if [ "$WRITE_TEST" = "no" ]; then
       printf '\n%sRESULT: PASS — Read-only storage checks passed; write integrity and performance were not tested%s\n' "$C_GREEN" "$C_RESET"
     else
-      printf '\n%sRESULT: PASS — eMMC storage is healthy with low wear level (0 failures, 0 warnings)%s\n' "$C_GREEN" "$C_RESET"
+      printf '\n%sRESULT: PASS — Required storage checks passed (0 failures, 0 warnings)%s\n' "$C_GREEN" "$C_RESET"
     fi
     printf 'Detailed technical log: %s\n\n' "$LOG_FILE"
     log_tech "RESULT: PASS"

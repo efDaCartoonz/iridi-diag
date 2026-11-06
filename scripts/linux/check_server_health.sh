@@ -28,7 +28,7 @@ case "${1:-}" in
     ;;
 esac
 
-TOOL_VERSION="2.2"
+TOOL_VERSION="2.3"
 JSON_OUTPUT=0
 IRIDI_DIAG_DATA_DIR=${IRIDI_DIAG_DATA_DIR:-}
 while [ "$#" -gt 0 ]; do
@@ -755,6 +755,66 @@ check_memory_health() {
 # ==============================================================================
 # SECTION 7: Storage, Mounts & eMMC Wear (SMART)
 # ==============================================================================
+normalize_hex() {
+  printf '%s' "$1" | tr 'A-F' 'a-f'
+}
+
+# Generic EXT_CSD estimates; A/B memory-area assignments are manufacturer-specific.
+# Reference: https://developer.toradex.com/software/linux-resources/linux-features/emmc-linux/
+life_description() {
+  case "$(normalize_hex "$1")" in
+    '') printf 'not reported; lifetime estimate unknown' ;;
+    0x00) printf 'not defined' ;;
+    0x01) printf '0-10%% of estimated lifetime used' ;;
+    0x02) printf '10-20%% of estimated lifetime used' ;;
+    0x03) printf '20-30%% of estimated lifetime used' ;;
+    0x04) printf '30-40%% of estimated lifetime used' ;;
+    0x05) printf '40-50%% of estimated lifetime used' ;;
+    0x06) printf '50-60%% of estimated lifetime used' ;;
+    0x07) printf '60-70%% of estimated lifetime used' ;;
+    0x08) printf '70-80%% of estimated lifetime used' ;;
+    0x09) printf '80-90%% of estimated lifetime used' ;;
+    0x0a) printf '90-100%% of estimated lifetime used' ;;
+    0x0b) printf 'estimated lifetime exceeded' ;;
+    *) printf 'reserved value; lifetime estimate unknown' ;;
+  esac
+}
+
+pre_eol_description() {
+  case "$(normalize_hex "$1")" in
+    '') printf 'not reported; reserve-block condition unknown' ;;
+    0x00) printf 'not defined' ;;
+    0x01) printf 'Normal (reserve-block condition)' ;;
+    0x02) printf 'Warning (reserve-block condition)' ;;
+    0x03) printf 'Urgent (reserve-block condition)' ;;
+    *) printf 'reserved value; reserve-block condition unknown' ;;
+  esac
+}
+
+life_defined() {
+  case "$(normalize_hex "$1")" in
+    0x01|0x02|0x03|0x04|0x05|0x06|0x07|0x08|0x09|0x0a|0x0b) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+report_emmc_indicators() {
+  EMMC_LIFE_A_RAW=$1
+  EMMC_LIFE_B_RAW=$2
+  EMMC_PRE_EOL_RAW=$3
+  EMMC_LIFE_A_DESC="$(life_description "$EMMC_LIFE_A_RAW")"
+  EMMC_LIFE_B_DESC="$(life_description "$EMMC_LIFE_B_RAW")"
+  EMMC_PRE_EOL_DESC="$(pre_eol_description "$EMMC_PRE_EOL_RAW")"
+  printf '  - Life A: %s - %s\n' "${EMMC_LIFE_A_RAW:-not reported}" "$EMMC_LIFE_A_DESC"
+  printf '  - Life B: %s - %s\n' "${EMMC_LIFE_B_RAW:-not reported}" "$EMMC_LIFE_B_DESC"
+  printf '  - Pre-EOL: %s - %s\n' "${EMMC_PRE_EOL_RAW:-not reported}" "$EMMC_PRE_EOL_DESC"
+  log_tech "EMMC Life A: raw='${EMMC_LIFE_A_RAW}' decoded='$EMMC_LIFE_A_DESC'"
+  log_tech "EMMC Life B: raw='${EMMC_LIFE_B_RAW}' decoded='$EMMC_LIFE_B_DESC'"
+  log_tech "EMMC Pre-EOL: raw='${EMMC_PRE_EOL_RAW}' decoded='$EMMC_PRE_EOL_DESC'"
+  printf '%s\n' '  [INFO] A/B areas are manufacturer-defined. Lifetime estimates are not damaged-cell percentages or a health guarantee.'
+  log_tech 'EMMC interpretation: A/B areas are manufacturer-defined; lifetime estimates are not damaged-cell percentages or a health guarantee.'
+}
+
 check_emmc_and_storage() {
   printf '\n%s[7/8] Storage & eMMC Wear Indicators (SMART)%s\n' "$C_BOLD" "$C_RESET"
 
@@ -770,7 +830,8 @@ check_emmc_and_storage() {
     MMC_NAME="$(cat "$MMC_DEV/name" 2>/dev/null)"
     MMC_MANFID="$(cat "$MMC_DEV/manfid" 2>/dev/null)"
     MMC_LIFE="$(cat "$MMC_DEV/life_time" 2>/dev/null)"
-    MMC_PRE_EOL="$(cat "$MMC_DEV/pre_eol_info" 2>/dev/null)"
+    MMC_PRE_EOL_RAW="$(cat "$MMC_DEV/pre_eol_info" 2>/dev/null)"
+    MMC_PRE_EOL="$(normalize_hex "$MMC_PRE_EOL_RAW")"
     MMC_HOST="${MMC_DEV##*/}"
     MMC_HOST="${MMC_HOST%%:*}"
     log_tech_file "EMMC BUS IOS ($MMC_HOST)" "/sys/kernel/debug/$MMC_HOST/ios"
@@ -784,36 +845,22 @@ check_emmc_and_storage() {
       0x0000fe|0xfe) MANUFACTURER_STR="Micron" ;;
     esac
 
-    LIFE_A="$(printf '%s' "$MMC_LIFE" | awk '{print $1}')"
-    LIFE_B="$(printf '%s' "$MMC_LIFE" | awk '{print $2}')"
-    
-    decode_life() {
-      case "$1" in
-        0x01|0x1|1) echo "0-10% used" ;;
-        0x02|0x2|2) echo "10-20% used" ;;
-        0x03|0x3|3) echo "20-30% used" ;;
-        0x04|0x4|4) echo "30-40% used" ;;
-        0x05|0x5|5) echo "40-50% used" ;;
-        0x06|0x6|6) echo "50-60% used" ;;
-        0x07|0x7|7) echo "60-70% used" ;;
-        0x08|0x8|8) echo "70-80% used" ;;
-        0x09|0x9|9) echo "80-90% used" ;;
-        0x0a|0xa|10) echo "90-100% used" ;;
-        0x0b|0xb|11) echo "exceeded life" ;;
-        *) echo "n/a" ;;
-      esac
-    }
+    LIFE_A_RAW="$(printf '%s' "$MMC_LIFE" | awk '{print $1}')"
+    LIFE_B_RAW="$(printf '%s' "$MMC_LIFE" | awk '{print $2}')"
+    LIFE_A="$(normalize_hex "$LIFE_A_RAW")"
+    LIFE_B="$(normalize_hex "$LIFE_B_RAW")"
+    log_tech "EMMC: dev=$MMC_DEV name=$MMC_NAME manfid=$MMC_MANFID ($MANUFACTURER_STR) life_raw='$MMC_LIFE' pre_eol='$MMC_PRE_EOL_RAW'"
+    report_emmc_indicators "$LIFE_A_RAW" "$LIFE_B_RAW" "$MMC_PRE_EOL_RAW"
 
-    log_tech "EMMC: dev=$MMC_DEV name=$MMC_NAME manfid=$MMC_MANFID ($MANUFACTURER_STR) life_raw='$MMC_LIFE' pre_eol=$MMC_PRE_EOL"
-
+    # Preserve the existing severity thresholds, including FAIL for Life 0x0a.
     if [ "$LIFE_A" = "0x0a" ] || [ "$LIFE_A" = "0x0b" ] || [ "$LIFE_B" = "0x0a" ] || [ "$LIFE_B" = "0x0b" ] || [ "$MMC_PRE_EOL" = "0x03" ]; then
-      fail "eMMC Flash: ${MMC_NAME:-eMMC} ($MANUFACTURER_STR) — CRITICAL WEAR: Life A: $(decode_life "$LIFE_A"), Life B: $(decode_life "$LIFE_B")!"
+      fail "eMMC Flash: ${MMC_NAME:-eMMC} ($MANUFACTURER_STR) — CRITICAL indicator reported; see Life A/B and Pre-EOL above."
     elif [ "$MMC_PRE_EOL" = "0x02" ] || [ "$LIFE_A" = "0x09" ] || [ "$LIFE_B" = "0x09" ]; then
-      warn "eMMC Flash: ${MMC_NAME:-eMMC} ($MANUFACTURER_STR) — ELEVATED WEAR: Life A: $(decode_life "$LIFE_A"), Life B: $(decode_life "$LIFE_B")."
-    elif [ "$(decode_life "$LIFE_A")" = "n/a" ] || [ "$(decode_life "$LIFE_B")" = "n/a" ] || [ "$MMC_PRE_EOL" != "0x01" ]; then
-      warn "eMMC Flash: ${MMC_NAME:-eMMC} — Wear status unknown or incomplete (A=$LIFE_A, B=$LIFE_B, Pre-EOL=$MMC_PRE_EOL)."
+      warn "eMMC Flash: ${MMC_NAME:-eMMC} ($MANUFACTURER_STR) — Wear/reserve-block indicator requires attention."
+    elif ! life_defined "$LIFE_A" || ! life_defined "$LIFE_B" || [ "$MMC_PRE_EOL" != "0x01" ]; then
+      warn "eMMC Flash: ${MMC_NAME:-eMMC} — Wear data incomplete (missing/undefined/reserved indicator); this does not establish a device failure."
     else
-      ok "eMMC Flash: ${MMC_NAME:-eMMC} ($MANUFACTURER_STR) — Wear: $(decode_life "$LIFE_A") (Health: Normal)."
+      ok "eMMC Flash: ${MMC_NAME:-eMMC} ($MANUFACTURER_STR) — Reported wear indicators are within current thresholds (estimates only)."
     fi
   else
     info "eMMC hardware sysfs node not directly exposed."
@@ -937,11 +984,16 @@ print_summary() {
   log_tech "================================================================================"
   if [ "$JSON_OUTPUT" -eq 1 ]; then
     case "$FINAL_RC" in 0) JSON_STATUS=PASS ;; 1) JSON_STATUS=WARN ;; *) JSON_STATUS=FAIL ;; esac
-    printf '{"status":"%s","exit_code":%d,"failures":%d,"warnings":%d,"model":%s,"serial":%s,"os_build_id":%s,"firmware_build":%s,"data_directory":%s,"latest_log":%s,"rtc":{"model":%s,"battery_low":%s,"offset_seconds":%s},"log_file":%s}\n' \
+    EMMC_JSON="$(printf '{"life_a":{"raw":%s,"description":%s},"life_b":{"raw":%s,"description":%s},"pre_eol":{"raw":%s,"description":%s}}' \
+      "$(json_string "${EMMC_LIFE_A_RAW:-}")" "$(json_string "${EMMC_LIFE_A_DESC:-not reported}")" \
+      "$(json_string "${EMMC_LIFE_B_RAW:-}")" "$(json_string "${EMMC_LIFE_B_DESC:-not reported}")" \
+      "$(json_string "${EMMC_PRE_EOL_RAW:-}")" "$(json_string "${EMMC_PRE_EOL_DESC:-not reported}")")"
+    printf '{"status":"%s","exit_code":%d,"failures":%d,"warnings":%d,"model":%s,"serial":%s,"os_build_id":%s,"firmware_build":%s,"data_directory":%s,"latest_log":%s,"emmc":%s,"rtc":{"model":%s,"battery_low":%s,"offset_seconds":%s},"log_file":%s}\n' \
       "$JSON_STATUS" "$FINAL_RC" "$FAIL_COUNT" "$WARN_COUNT" \
       "$(json_string "$MODEL")" "$(json_string "$SERIAL")" \
       "$(json_string "$OS_BUILD_ID")" "$(json_string "$FIRMWARE_TIMESTAMP")" \
       "$(json_string "${ACTIVE_DATA_DIR:-}")" "$(json_string "${LATEST_LOG:-}")" \
+      "$EMMC_JSON" \
       "$(json_string "${RTC_NAME:-}")" "$(json_string "${BATTERY_LOW:-unknown}")" \
       "${RTC_OFFSET:-null}" "$(json_string "$LOG_FILE")" >&4
   fi
